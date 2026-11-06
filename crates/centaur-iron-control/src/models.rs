@@ -491,6 +491,15 @@ pub struct SlackChannelPermissionInput {
     pub history_enabled: bool,
 }
 
+/// Request body for creating/updating one Discord permission row on a principal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct DiscordChannelPermissionInput {
+    pub channel_id: String,
+    pub upload_enabled: bool,
+    pub download_enabled: bool,
+    pub history_enabled: bool,
+}
+
 /// A principal's effective config — the same secrets/postgres the principal's
 /// proxy syncs. api-rs reads it to wire a sandbox's env. Only the fields api-rs
 /// needs are captured; the proxy owns the rest (sources, rules, dsn, role).

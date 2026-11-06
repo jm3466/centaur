@@ -4,7 +4,7 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use serde::Serialize;
 use serde_json::json;
 
-use centaur_console_db::{models::Config, oid, slack_channels};
+use centaur_console_db::{discord_channels, models::Config, oid, slack_channels};
 
 use crate::{
     ApiError,
@@ -20,6 +20,7 @@ struct ApiJwtClaims {
     sub: String,
     capabilities: Capabilities,
     slack: SlackChannels,
+    discord: DiscordChannels,
 }
 
 #[derive(Serialize)]
@@ -31,6 +32,13 @@ struct Capabilities {
 
 #[derive(Serialize)]
 struct SlackChannels {
+    upload_channels: Vec<String>,
+    download_channels: Vec<String>,
+    history_channels: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct DiscordChannels {
     upload_channels: Vec<String>,
     download_channels: Vec<String>,
     history_channels: Vec<String>,
@@ -79,6 +87,7 @@ pub(crate) async fn append_api_jwt(
         return Ok(());
     }
     let channels = slack_channels(&state.pool, principal_id).await?;
+    let discord = discord_channels(&state.pool, principal_id).await?;
     let principal_oid = oid("prn", principal_id);
     let iat = window_start(&principal_oid, now, 900);
     let claims = ApiJwtClaims {
@@ -105,6 +114,11 @@ pub(crate) async fn append_api_jwt(
             upload_channels: channels.upload,
             download_channels: channels.download,
             history_channels: channels.history,
+        },
+        discord: DiscordChannels {
+            upload_channels: discord.upload,
+            download_channels: discord.download,
+            history_channels: discord.history,
         },
     };
     let token = jwt(&claims, secret)?;

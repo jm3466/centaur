@@ -392,6 +392,27 @@ impl Fixture {
         .unwrap();
     }
 
+    async fn discord_permission(
+        &self,
+        column: &str,
+        owner: i64,
+        channel: &str,
+        upload: bool,
+        download: bool,
+    ) {
+        sqlx::query(&format!(
+            "INSERT INTO discord_channel_permissions ({column}, channel_id, upload_enabled, download_enabled, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, now(), now())"
+        ))
+        .bind(owner)
+        .bind(channel)
+        .bind(upload)
+        .bind(download)
+        .execute(&self.pool)
+        .await
+        .unwrap();
+    }
+
     /// Registers a proxy and returns its bearer token.
     async fn proxy(&self, principal: Option<i64>, requester: Option<i64>, labels: Value) -> String {
         let token = format!("iprx_{:032x}{:032x}", rand_suffix(), rand_suffix());
@@ -868,6 +889,46 @@ async fn api_jwt_carries_direct_and_role_slack_permissions() {
             "download_channels": [],
             "history_channels": ["C0000000001"]
         })
+    );
+}
+
+#[tokio::test]
+async fn api_jwt_carries_direct_and_role_discord_permissions() {
+    let Some(f) = Fixture::with_jwt(true).await else {
+        return;
+    };
+    let principal = f.principal("principal").await;
+    let role = f.role("role", principal).await;
+    f.discord_permission("principal_id", principal, "100000000000000001", true, false)
+        .await;
+    f.discord_permission("role_id", role, "100000000000000001", false, true)
+        .await;
+    f.discord_permission("role_id", role, "100000000000000002", false, false)
+        .await;
+    let token = f.proxy(Some(principal), None, json!({})).await;
+
+    let body = f.sync(&token).await;
+    let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
+    validation.set_audience(&["centaur-api"]);
+    validation.set_issuer(&["centaur-console"]);
+    let claims = jsonwebtoken::decode::<Value>(
+        body["secrets"][0]["source"]["value"].as_str().unwrap(),
+        &jsonwebtoken::DecodingKey::from_secret(JWT_SECRET.as_bytes()),
+        &validation,
+    )
+    .unwrap()
+    .claims;
+    assert_eq!(
+        claims["discord"],
+        json!({
+            "upload_channels": ["100000000000000001"],
+            "download_channels": ["100000000000000001"],
+            "history_channels": []
+        })
+    );
+    assert_eq!(
+        claims["slack"],
+        json!({ "upload_channels": [], "download_channels": [], "history_channels": [] })
     );
 }
 
