@@ -2,10 +2,14 @@ module Api
   module V1
     class PrincipalsController < Api::BaseController
       include SlackChannelPermissionApi
+      include DiscordChannelPermissionApi
 
       def index
         records, meta = paginated_label_search(
-          Principal.includes(:console_user, :slack_channel_permissions, roles: :slack_channel_permissions)
+          Principal.includes(
+            :console_user, :slack_channel_permissions, :discord_channel_permissions,
+            roles: %i[slack_channel_permissions discord_channel_permissions]
+          )
         )
         render json: { data: records.map { |p| record_payload(p) }, meta: meta }
       end
@@ -31,6 +35,7 @@ module Api
           principal.apply_default_sandbox_capabilities!(principal_params)
           principal.save!
           replace_slack_channel_permissions!(principal) if data_params.key?(:slack_channel_permissions)
+          replace_discord_channel_permissions!(principal) if data_params.key?(:discord_channel_permissions)
         end
         render status: :created, json: { data: record_payload(principal) }
       rescue ActiveRecord::RecordInvalid => e
@@ -90,6 +95,7 @@ module Api
           principal.apply_default_sandbox_capabilities!(principal_params) if was_new
           principal.save!
           replace_slack_channel_permissions!(principal) if data_params.key?(:slack_channel_permissions)
+          replace_discord_channel_permissions!(principal) if data_params.key?(:discord_channel_permissions)
         end
         [ principal, was_new ]
       end
@@ -102,6 +108,8 @@ module Api
           labels: principal.labels_with_sandbox_capabilities,
           slack_channel_permissions: principal.slack_channel_permissions_payload,
           effective_slack_channel_permissions: principal.effective_slack_channel_permissions_payload,
+          discord_channel_permissions: principal.discord_channel_permissions_payload,
+          effective_discord_channel_permissions: principal.effective_discord_channel_permissions_payload,
           sandbox_repo_cache: principal.sandbox_repo_cache,
           sandbox_observability_enabled: principal.sandbox_observability_enabled,
           sandbox_sessions_read_enabled: principal.sandbox_sessions_read_enabled,
@@ -131,6 +139,10 @@ module Api
       end
 
       def slack_channel_permission_owner
+        Principal.find_by_oid!(params[:id])
+      end
+
+      def discord_channel_permission_owner
         Principal.find_by_oid!(params[:id])
       end
     end

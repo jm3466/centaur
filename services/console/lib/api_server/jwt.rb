@@ -13,6 +13,7 @@ module ApiServer
       upload_channels = channels.fetch(:upload)
       download_channels = channels.fetch(:download)
       history_channels = channels.fetch(:history)
+      discord_channels = principal.discord_channel_ids_by_permission
 
       CentaurJwt::WindowedToken.encode(
         subject_oid: principal.oid,
@@ -32,6 +33,11 @@ module ApiServer
             "upload_channels" => upload_channels,
             "download_channels" => download_channels,
             "history_channels" => history_channels
+          },
+          "discord" => {
+            "upload_channels" => discord_channels.fetch(:upload),
+            "download_channels" => discord_channels.fetch(:download),
+            "history_channels" => discord_channels.fetch(:history)
           }
         }
       )

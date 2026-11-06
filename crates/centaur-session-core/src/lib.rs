@@ -218,6 +218,7 @@ impl ChatDestination {
                     .unwrap_or_default();
                 format!(
                     "[chat surface: Discord · channel {channel_id}{thread} (guild {guild_id}). \
+                     Discord tool policy: use proxied methods (without `-direct`). \
                      Centaur delivers your reply to this thread automatically — do not repost it with the discord tool. \
                      Send files here with `discord upload`.]"
                 )
@@ -820,6 +821,7 @@ mod tests {
             .context_line();
         assert!(discord.contains("Discord"));
         assert!(discord.contains("222"));
+        assert!(discord.contains("use proxied methods"));
         assert!(discord.contains("discord upload"));
 
         let linear = ThreadKey::parse("linear:ISSUE:c:CMT")

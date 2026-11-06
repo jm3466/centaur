@@ -8,9 +8,10 @@ use std::env;
 
 use active_record_encryption::ActiveRecordEncryption;
 use centaur_console_db::{
-    ApiClient, ApiClientPrincipal, REDACTED, SecretValues, SlackChannelPermission, Subject,
-    api_client_principals, build_config, find_api_client, find_direct_slack_channel_permission,
-    find_principal, find_principal_by_foreign_id, find_user_id_by_email, models::Config,
+    ApiClient, ApiClientPrincipal, DiscordChannels, REDACTED, SecretValues, SlackChannelPermission,
+    Subject, api_client_principals, build_config, discord_channels, find_api_client,
+    find_direct_slack_channel_permission, find_principal, find_principal_by_foreign_id,
+    find_user_id_by_email, models::Config,
 };
 use serde_json::{Value, json};
 use sqlx::{PgPool, postgres::PgPoolOptions};
@@ -396,6 +397,72 @@ async fn reads_principals_users_and_direct_slack_permissions() {
             .await
             .unwrap(),
         None
+    );
+}
+
+#[tokio::test]
+async fn merges_direct_and_role_discord_channel_permissions() {
+    let Some(fixture) = Fixture::new().await else {
+        return;
+    };
+    let principal = fixture.principal("discord-principal").await;
+    let role: i64 = sqlx::query_scalar(
+        "INSERT INTO roles (foreign_id, created_by_id, created_at, updated_at) \
+         VALUES ($1, $2, now(), now()) RETURNING id",
+    )
+    .bind(fixture.name("discord-role"))
+    .bind(fixture.admin)
+    .fetch_one(&fixture.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO principal_roles (principal_id, role_id, created_at, updated_at) \
+         VALUES ($1, $2, now(), now())",
+    )
+    .bind(principal)
+    .bind(role)
+    .execute(&fixture.pool)
+    .await
+    .unwrap();
+    for (column, owner, channel, upload, download, history) in [
+        (
+            "principal_id",
+            principal,
+            "100000000000000001",
+            true,
+            false,
+            false,
+        ),
+        ("role_id", role, "100000000000000001", false, false, true),
+        ("role_id", role, "100000000000000002", false, true, false),
+    ] {
+        sqlx::query(&format!(
+            "INSERT INTO discord_channel_permissions ({column}, channel_id, upload_enabled, download_enabled, history_enabled, created_at, updated_at) \
+             VALUES ($1, $2, $3, $4, $5, now(), now())"
+        ))
+        .bind(owner)
+        .bind(channel)
+        .bind(upload)
+        .bind(download)
+        .bind(history)
+        .execute(&fixture.pool)
+        .await
+        .unwrap();
+    }
+
+    assert_eq!(
+        discord_channels(&fixture.pool, principal).await.unwrap(),
+        DiscordChannels {
+            upload: vec!["100000000000000001".to_owned()],
+            download: vec!["100000000000000002".to_owned()],
+            history: vec!["100000000000000001".to_owned()],
+        }
+    );
+    assert_eq!(
+        discord_channels(&fixture.pool, fixture.principal("no-discord").await)
+            .await
+            .unwrap(),
+        DiscordChannels::default()
     );
 }
 

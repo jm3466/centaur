@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_11_04_232304) do
+ActiveRecord::Schema[8.1].define(version: 2026_11_06_014108) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -104,6 +104,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_04_232304) do
     t.index ["next_attempt_at"], name: "index_broker_credentials_on_next_attempt_at"
     t.index ["oauth_app_id", "provider_subject"], name: "index_broker_credentials_on_oauth_app_id_and_provider_subject", unique: true, where: "(provider_subject IS NOT NULL)"
     t.index ["oauth_app_id"], name: "index_broker_credentials_on_oauth_app_id"
+  end
+
+  create_table "discord_channel_permissions", force: :cascade do |t|
+    t.bigint "principal_id"
+    t.bigint "role_id"
+    t.string "channel_id", null: false
+    t.boolean "upload_enabled", default: false, null: false
+    t.boolean "download_enabled", default: false, null: false
+    t.boolean "history_enabled", default: false, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["principal_id", "channel_id"], name: "idx_discord_permissions_unique_principal_channel", unique: true, where: "(principal_id IS NOT NULL)"
+    t.index ["role_id", "channel_id"], name: "idx_discord_permissions_unique_role_channel", unique: true, where: "(role_id IS NOT NULL)"
+    t.check_constraint "(principal_id IS NOT NULL) <> (role_id IS NOT NULL)", name: "discord_channel_permissions_exactly_one_grantee"
   end
 
   create_table "gcp_auth_secrets", force: :cascade do |t|
@@ -602,6 +616,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_11_04_232304) do
   add_foreign_key "aws_auth_secrets", "users", column: "created_by_id"
   add_foreign_key "broker_credentials", "oauth_apps"
   add_foreign_key "broker_credentials", "users", column: "created_by_id"
+  add_foreign_key "discord_channel_permissions", "principals"
+  add_foreign_key "discord_channel_permissions", "roles"
   add_foreign_key "gcp_auth_secrets", "users", column: "created_by_id"
   add_foreign_key "gcp_id_token_secrets", "users", column: "created_by_id"
   add_foreign_key "grants", "aws_auth_secrets"

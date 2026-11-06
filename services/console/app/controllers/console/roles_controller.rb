@@ -4,12 +4,14 @@ module Console
     include KvRowParams
     include SecretKinds
     include Console::SlackChannelPermissionManagement
+    include Console::DiscordChannelPermissionManagement
 
     layout "console"
 
     before_action :require_admin
     before_action :set_role, only: %i[
       show edit update grant_secret revoke_grant update_slack_channel_permissions
+      update_discord_channel_permissions
     ]
 
     def index
@@ -18,6 +20,7 @@ module Console
 
     def show
       load_slack_channel_permission_form(@role)
+      load_discord_channel_permission_form(@role)
       @grants = @role.grants.includes(Grant::GRANTABLE_ASSOCIATIONS).order(:id)
       granted_ids = Hash.new { |h, k| h[k] = [] }
       @grants.each do |grant|
@@ -77,6 +80,10 @@ module Console
 
     def update_slack_channel_permissions
       update_slack_channel_permissions_from_form(@role, console_role_path(@role.oid))
+    end
+
+    def update_discord_channel_permissions
+      update_discord_channel_permissions_from_form(@role, console_role_path(@role.oid))
     end
 
     private

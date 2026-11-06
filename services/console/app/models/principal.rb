@@ -14,12 +14,14 @@ class Principal < ApplicationRecord
   has_many :principal_roles, dependent: :destroy
   has_many :roles, through: :principal_roles
   has_many :slack_channel_permissions, dependent: :destroy
+  has_many :discord_channel_permissions, dependent: :destroy
   has_many :mcp_oauth_authorization_codes, dependent: :destroy
   has_many :mcp_oauth_refresh_tokens, dependent: :destroy
   belongs_to :created_by, class_name: "User"
   belongs_to :console_user, class_name: "User", optional: true
 
   include SlackChannelPermissionOwner
+  include DiscordChannelPermissionOwner
 
   after_commit :auto_grant_matching_oauth_credentials, on: %i[create update]
   after_create_commit :enqueue_slack_channel_catalog_refresh, if: :slack_channel_catalog_refreshable?
@@ -239,6 +241,44 @@ class Principal < ApplicationRecord
     end
   end
 
+  def effective_discord_channel_permissions_payload
+    @effective_discord_channel_permissions_payload ||=
+      merged_discord_channel_permissions(effective_discord_channel_permissions)
+  end
+
+  def inherited_discord_channel_permissions_payload
+    @inherited_discord_channel_permissions_payload ||= begin
+      permissions = if loaded_role_discord_channel_permissions?
+        roles.flat_map { |role| role.discord_channel_permissions.to_a }
+      else
+        DiscordChannelPermission.where(role_id: role_ids)
+      end
+      merged_discord_channel_permissions(permissions)
+    end
+  end
+
+  def discord_channel_ids_by_permission
+    @discord_channel_ids_by_permission ||= begin
+      initial = DiscordChannelPermission::PERMISSION_FLAGS.to_h { |flag| [ flag.fetch(:key), [] ] }
+      effective_discord_channel_permissions_payload.each_with_object(initial) do |row, channels|
+        channel_id = row.fetch("channel_id")
+        DiscordChannelPermission::PERMISSION_FLAGS.each do |flag|
+          channels[flag.fetch(:key)] << channel_id if row.fetch(flag.fetch(:attribute).to_s)
+        end
+      end
+    end
+  end
+
+  def reset_discord_channel_permissions_cache!
+    %i[
+      @effective_discord_channel_permissions_payload
+      @inherited_discord_channel_permissions_payload
+      @discord_channel_ids_by_permission
+    ].each do |ivar|
+      remove_instance_variable(ivar) if instance_variable_defined?(ivar)
+    end
+  end
+
   def self.bump_sync_config_cache_versions(targets)
     scope = sync_config_cache_bump_scope(targets)
     return unless scope
@@ -341,6 +381,40 @@ class Principal < ApplicationRecord
       }
       SlackChannelPermission::PERMISSION_ATTRIBUTE_NAMES.each { |flag| row[flag] = false unless row.key?(flag) }
       SlackChannelPermission::PERMISSION_ATTRIBUTE_NAMES.each do |flag|
+        row[flag] ||= permission.public_send(flag)
+      end
+    end.values.sort_by { |row| row.fetch("channel_id") }
+  end
+
+  def effective_discord_channel_permissions
+    return discord_channel_permissions.to_a unless persisted?
+
+    if association(:discord_channel_permissions).loaded? && loaded_role_discord_channel_permissions?
+      return discord_channel_permissions.to_a + roles.flat_map { |role| role.discord_channel_permissions.to_a }
+    end
+
+    direct = DiscordChannelPermission.where(principal_id: id)
+    role_permissions = DiscordChannelPermission.where(role_id: role_ids)
+    direct.or(role_permissions)
+  end
+
+  def loaded_role_discord_channel_permissions?
+    association(:roles).loaded? &&
+      roles.all? { |role| role.association(:discord_channel_permissions).loaded? }
+  end
+
+  def merged_discord_channel_permissions(permissions)
+    ordered = permissions.sort_by do |permission|
+      [ permission.principal_id.present? ? 0 : 1, permission.role_id || 0, permission.id || 0 ]
+    end
+
+    ordered.each_with_object({}) do |permission, by_channel|
+      channel_id = permission.channel_id.to_s.strip
+      row = by_channel[channel_id] ||= {
+        "channel_id" => channel_id
+      }
+      DiscordChannelPermission::PERMISSION_ATTRIBUTE_NAMES.each { |flag| row[flag] = false unless row.key?(flag) }
+      DiscordChannelPermission::PERMISSION_ATTRIBUTE_NAMES.each do |flag|
         row[flag] ||= permission.public_send(flag)
       end
     end.values.sort_by { |row| row.fetch("channel_id") }

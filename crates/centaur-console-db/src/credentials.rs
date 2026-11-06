@@ -18,6 +18,15 @@ pub struct SlackChannels {
     pub history: Vec<String>,
 }
 
+/// The Discord channels a principal may upload to, download from, and read
+/// the history of, through direct permissions and its roles' permissions.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct DiscordChannels {
+    pub upload: Vec<String>,
+    pub download: Vec<String>,
+    pub history: Vec<String>,
+}
+
 /// Every credential granted to `principal_id`, plus the always-available
 /// OAuth wrappers granted directly to `requester_id`, each with its strongest
 /// grant priority. Ordered by kind, then ascending priority, then id.
@@ -62,6 +71,32 @@ pub async fn slack_channels(pool: &PgPool, principal_id: i64) -> Result<SlackCha
     .fetch_all(pool)
     .await?;
     let mut channels = SlackChannels::default();
+    for row in rows {
+        let channel: String = row.try_get("channel_id")?;
+        if row.try_get("upload")? {
+            channels.upload.push(channel.clone());
+        }
+        if row.try_get("download")? {
+            channels.download.push(channel.clone());
+        }
+        if row.try_get("history")? {
+            channels.history.push(channel);
+        }
+    }
+    Ok(channels)
+}
+
+pub async fn discord_channels(pool: &PgPool, principal_id: i64) -> Result<DiscordChannels> {
+    let rows = sqlx::query(
+        "SELECT channel_id, bool_or(upload_enabled) AS upload, bool_or(download_enabled) AS download, bool_or(history_enabled) AS history \
+         FROM discord_channel_permissions \
+         WHERE principal_id = $1 OR role_id IN (SELECT role_id FROM principal_roles WHERE principal_id = $1) \
+         GROUP BY channel_id ORDER BY channel_id",
+    )
+    .bind(principal_id)
+    .fetch_all(pool)
+    .await?;
+    let mut channels = DiscordChannels::default();
     for row in rows {
         let channel: String = row.try_get("channel_id")?;
         if row.try_get("upload")? {

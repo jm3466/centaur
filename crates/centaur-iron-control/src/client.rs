@@ -16,10 +16,10 @@ use crate::database;
 use crate::error::{IronControlError, Result};
 use crate::models::{
     AwsAuthSecretInput, BrokerCredentialInput, BrokerCredentialRecord, DataEnvelope,
-    EffectiveConfig, GcpAuthSecretInput, GcpIdTokenSecretInput, Grant, GrantSecret, Grantee,
-    HmacSecretInput, IdentityInput, OAuthTokenSecretInput, PgDsnSecretInput, Principal,
-    PrincipalInput, Proxy, ProxyInput, Role, SecretRecord, SlackChannelPermissionInput,
-    StaticSecretInput,
+    DiscordChannelPermissionInput, EffectiveConfig, GcpAuthSecretInput, GcpIdTokenSecretInput,
+    Grant, GrantSecret, Grantee, HmacSecretInput, IdentityInput, OAuthTokenSecretInput,
+    PgDsnSecretInput, Principal, PrincipalInput, Proxy, ProxyInput, Role, SecretRecord,
+    SlackChannelPermissionInput, StaticSecretInput,
 };
 
 const API_PREFIX: &str = "/api/v1";
@@ -214,6 +214,20 @@ impl IronControlClient {
         }
         self.upsert_slack_channel_permission(principal_id, input)
             .await
+    }
+
+    /// Create or update one Discord channel permission row on a principal
+    /// without replacing that principal's other Discord permissions.
+    pub async fn upsert_discord_channel_permission(
+        &self,
+        principal_id: &str,
+        input: &DiscordChannelPermissionInput,
+    ) -> Result<()> {
+        let path = format!(
+            "{API_PREFIX}/principals/{}/discord_channel_permissions",
+            urlencoding::encode(principal_id)
+        );
+        self.write_unit(Method::POST, &path, input).await
     }
 
     /// List the roles assigned to a principal (by OID; this sub-resource route

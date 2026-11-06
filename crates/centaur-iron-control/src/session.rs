@@ -13,7 +13,9 @@ use serde_json::Value;
 
 use crate::IronControlClient;
 use crate::error::{IronControlError, Result};
-use crate::models::{Principal, PrincipalInput, SlackChannelPermissionInput};
+use crate::models::{
+    DiscordChannelPermissionInput, Principal, PrincipalInput, SlackChannelPermissionInput,
+};
 use crate::principal::{
     PrincipalRef, derive_github_requester_principal, derive_principal_with_slack_team,
     derive_slack_requester_principal, is_direct_message, slack_conversation_id,
@@ -101,6 +103,7 @@ impl SessionRegistrar {
         apply_slack_dm_email(thread_key, metadata.slack_user_email, &mut input);
         let existing = self.merge_existing_labels(&mut input).await?;
         let slack_permission = session_slack_permission(thread_key, &input, existing.is_some());
+        let discord_permission = session_discord_permission(&input, existing.is_some());
         let record = match principal_write(existing, create_if_missing) {
             PrincipalWrite::UseExisting(record) => record,
             PrincipalWrite::Upsert => self.client.refresh_principal(&input).await?,
@@ -113,6 +116,11 @@ impl SessionRegistrar {
         if let Some(permission) = slack_permission {
             self.client
                 .refresh_slack_channel_permission(&record.id, &permission)
+                .await?;
+        }
+        if let Some(permission) = discord_permission {
+            self.client
+                .upsert_discord_channel_permission(&record.id, &permission)
                 .await?;
         }
         Ok(record)
@@ -234,6 +242,24 @@ fn session_slack_permission(
         input.slack_user_id.as_deref(),
     )?;
     (!exists || is_direct_message(Some(&permission.channel_id))).then_some(permission)
+}
+
+/// The Discord permission a session registration writes: a new channel
+/// principal gets its own channel, and existing principals keep operator edits.
+fn session_discord_permission(
+    input: &PrincipalInput,
+    exists: bool,
+) -> Option<DiscordChannelPermissionInput> {
+    if exists {
+        return None;
+    }
+    let channel_id = input.labels.get("discord_channel_id")?;
+    Some(DiscordChannelPermissionInput {
+        channel_id: channel_id.clone(),
+        upload_enabled: true,
+        download_enabled: true,
+        history_enabled: true,
+    })
 }
 
 /// How a turn's requester principal is resolved from the execute metadata.
@@ -567,6 +593,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn new_discord_principal_gets_its_own_channel_permission() {
+        let (base_url, requests, server) =
+            spawn_iron_control_stub(|method, path| match (method, path) {
+                ("PUT", "/api/v1/principals/discord-channel-111-222") => {
+                    principal("prn_discord", "discord-channel-111-222", json!({}))
+                }
+                ("POST", "/api/v1/principals/prn_discord/discord_channel_permissions") => {
+                    ("200 OK", r#"{"data":{"ok":true}}"#.to_owned())
+                }
+                _ => not_found(),
+            })
+            .await;
+        let registrar = SessionRegistrar::new(IronControlClient::new(base_url, "test-key"));
+
+        registrar
+            .register_session("discord:111:222:333", None)
+            .await
+            .expect("register Discord session");
+
+        let requests = requests.lock().unwrap();
+        let permission = requests
+            .iter()
+            .find(|request| request.path.ends_with("/discord_channel_permissions"))
+            .and_then(|request| request.body.clone())
+            .expect("own-channel permission is written");
+        assert_eq!(
+            permission["data"],
+            json!({
+                "channel_id": "222",
+                "upload_enabled": true,
+                "download_enabled": true,
+                "history_enabled": true
+            })
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|request| !request.path.ends_with("/slack_channel_permissions"))
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn unknown_console_requester_is_an_error_not_an_omitted_requester() {
         let (base_url, _requests, server) = spawn_iron_control_stub(|_, _| not_found()).await;
         let registrar = SessionRegistrar::new(IronControlClient::new(base_url, "test-key"));
@@ -674,6 +743,29 @@ mod tests {
         assert_eq!(permission(dm, Some("U123"), false).as_deref(), Some("D123"));
         assert_eq!(permission(dm, Some("U123"), true).as_deref(), Some("D123"));
         assert_eq!(permission("linear:issue-1", None, false), None);
+    }
+
+    #[test]
+    fn session_discord_permission_preserves_existing_channel_grants() {
+        let permission = |thread_key: &str, exists: bool| {
+            let input = derive_principal(thread_key, None, None)
+                .expect("principal should be derivable")
+                .to_principal_input();
+            session_discord_permission(&input, exists).map(|permission| permission.channel_id)
+        };
+
+        assert_eq!(
+            permission("discord:111:222:333", false).as_deref(),
+            Some("222")
+        );
+        assert_eq!(permission("discord:111:222", false).as_deref(), Some("222"));
+        assert_eq!(
+            permission("discord:111:222:333", true),
+            None,
+            "operator edits to an existing channel's permission must survive"
+        );
+        assert_eq!(permission("discord:111", false), None);
+        assert_eq!(permission("slack:T123:C123:1773364194.179929", false), None);
     }
 
     #[test]

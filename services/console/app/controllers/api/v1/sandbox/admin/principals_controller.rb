@@ -110,6 +110,13 @@ module Api
             head :no_content
           end
 
+          # DELETE /api/v1/sandbox/admin/principals/:id/discord_channel_permissions/:channel_id
+          def destroy_discord_channel_permission
+            principal = Principal.find_by_oid!(params[:id])
+            principal.discord_channel_permissions.find_by!(channel_id: params[:channel_id].to_s.strip).destroy!
+            head :no_content
+          end
+
           private
 
           # Matches api-rs's slugify for workflow principal foreign IDs.

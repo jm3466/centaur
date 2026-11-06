@@ -29,6 +29,7 @@ module Api
         assert_equal "acme-infra", data["foreign_id"]
         assert_equal "Infra", data["name"]
         assert_equal [], data["slack_channel_permissions"]
+        assert_equal [], data["discord_channel_permissions"]
       end
 
       test "GET returns 404 for an unknown oid" do
@@ -167,6 +168,44 @@ module Api
         permission.reload
         assert_not permission.upload_enabled
         assert_predicate permission, :download_enabled
+        assert_predicate permission, :history_enabled
+      end
+
+      test "POST creates a role with Discord channel permissions" do
+        body = {
+          data: {
+            foreign_id: "discord-support",
+            discord_channel_permissions: [
+              { channel_id: " 123456789012345678 ", upload_enabled: true, history_enabled: true }
+            ]
+          }
+        }
+
+        post api_v1_roles_url, params: body.to_json, headers: auth_headers
+        assert_response :created
+
+        role = Role.find_by!(foreign_id: "discord-support")
+        assert_equal [ "123456789012345678" ], role.discord_channel_permissions.pluck(:channel_id)
+        assert_equal role.discord_channel_permissions_payload,
+                     json_body.dig("data", "discord_channel_permissions")
+      end
+
+      test "POST upserts one role Discord channel permission idempotently" do
+        role = roles(:acme_infra)
+        body = { data: { channel_id: "123456789012345678", upload_enabled: true, download_enabled: false } }
+
+        post "/api/v1/roles/#{role.oid}/discord_channel_permissions", params: body.to_json, headers: auth_headers
+        assert_response :created
+
+        body[:data][:upload_enabled] = false
+        assert_no_difference -> { role.discord_channel_permissions.count } do
+          post "/api/v1/roles/#{role.oid}/discord_channel_permissions", params: body.to_json, headers: auth_headers
+        end
+        assert_response :ok
+
+        permission = role.discord_channel_permissions.reload.sole
+        assert_not permission.upload_enabled
+        assert_not permission.download_enabled
         assert_predicate permission, :history_enabled
       end
 

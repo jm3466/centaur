@@ -1023,6 +1023,114 @@ module Api
         assert_predicate permission, :history_enabled
       end
 
+      test "PUT replaces Discord channel permission rows" do
+        principal = principals(:acme_channel)
+        principal.discord_channel_permissions.create!(
+          channel_id: "111111111111111111",
+          upload_enabled: true
+        )
+        body = {
+          data: {
+            discord_channel_permissions: [
+              {
+                channel_id: " 123456789012345678 ",
+                upload_enabled: true,
+                download_enabled: true,
+                history_enabled: false
+              }
+            ]
+          }
+        }
+
+        put api_v1_principal_url(id: principal.oid), params: body.to_json, headers: auth_headers
+        assert_response :ok
+
+        expected = [
+          {
+            "channel_id" => "123456789012345678",
+            "upload_enabled" => true,
+            "download_enabled" => true,
+            "history_enabled" => false
+          }
+        ]
+        assert_equal expected, principal.reload.discord_channel_permissions_payload
+        assert_equal expected, json_body.dig("data", "discord_channel_permissions")
+      end
+
+      test "GET separates direct and effective Discord channel permissions" do
+        principal = principals(:acme_channel)
+        principal.discord_channel_permissions.create!(
+          channel_id: "123456789012345678",
+          upload_enabled: true
+        )
+        roles(:acme_infra).discord_channel_permissions.create!(
+          channel_id: "123456789012345678",
+          download_enabled: true,
+          history_enabled: true
+        )
+
+        get api_v1_principal_url(id: principal.oid), headers: auth_headers
+        assert_response :ok
+        assert_equal(
+          {
+            "channel_id" => "123456789012345678",
+            "upload_enabled" => true,
+            "download_enabled" => false,
+            "history_enabled" => false
+          },
+          json_body.dig("data", "discord_channel_permissions").sole
+        )
+        assert_equal(
+          {
+            "channel_id" => "123456789012345678",
+            "upload_enabled" => true,
+            "download_enabled" => true,
+            "history_enabled" => true
+          },
+          json_body.dig("data", "effective_discord_channel_permissions").sole
+        )
+      end
+
+      test "PUT rejects a single Discord channel permission object" do
+        principal = principals(:acme_channel)
+        body = { data: { discord_channel_permissions: { channel_id: "123456789012345678", upload_enabled: true } } }
+
+        put api_v1_principal_url(id: principal.oid), params: body.to_json, headers: auth_headers
+        assert_response :unprocessable_content
+        assert_equal "discord_channel_permissions must be an array", json_body.dig("error", "message")
+      end
+
+      test "POST upserts one Discord channel permission and leaves omitted flags unchanged" do
+        principal = principals(:acme_channel)
+        principal.discord_channel_permissions.create!(
+          channel_id: "987654321098765432",
+          upload_enabled: true
+        )
+
+        post "/api/v1/principals/#{principal.oid}/discord_channel_permissions",
+             params: { data: { channel_id: " 123456789012345678 ", upload_enabled: false } }.to_json,
+             headers: auth_headers
+        assert_response :created
+        permission = principal.discord_channel_permissions.find_by!(channel_id: "123456789012345678")
+        assert_not permission.upload_enabled
+        assert_predicate permission, :download_enabled
+        assert_predicate permission, :history_enabled
+
+        post "/api/v1/principals/#{principal.oid}/discord_channel_permissions",
+             params: { data: { channel_id: "123456789012345678", upload_enabled: true } }.to_json,
+             headers: auth_headers
+        assert_response :ok
+        assert_predicate permission.reload, :upload_enabled
+        assert_predicate permission, :history_enabled
+        assert_equal %w[123456789012345678 987654321098765432],
+                     principal.discord_channel_permissions.ordered.pluck(:channel_id)
+
+        post "/api/v1/principals/#{principal.oid}/discord_channel_permissions",
+             params: { data: { channel_id: "general" } }.to_json,
+             headers: auth_headers
+        assert_response :unprocessable_content
+      end
+
       test "PUT keeps foreign_id immutable" do
         principal = principals(:acme_channel)
         original_foreign_id = principal.foreign_id

@@ -1,19 +1,26 @@
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from client import DiscordClient
 
+CHANNEL = "123456789012345678"
+THREAD = "223456789012345678"
 
-class _FakeStream:
-    """Minimal stand-in for ``httpx.Client().stream(...)``'s response context."""
 
-    def __init__(self, chunks, status_code=200):
-        self._chunks = chunks
+class _FakeResponse:
+    """Minimal stand-in for an ``httpx`` response, plain or streamed."""
+
+    def __init__(self, status_code=200, json_body=None, headers=None, chunks=()):
         self.status_code = status_code
+        self._json = json_body
+        self.headers = httpx.Headers(headers or {})
+        self._chunks = chunks
+        self.text = "" if json_body is None else str(json_body)
 
     def __enter__(self):
         return self
@@ -21,11 +28,22 @@ class _FakeStream:
     def __exit__(self, *args):
         return False
 
+    def json(self):
+        if self._json is None:
+            raise ValueError("no JSON body")
+        return self._json
+
+    def read(self):
+        return b""
+
     def iter_bytes(self):
         yield from self._chunks
 
 
-def _fake_streaming_client(monkeypatch, chunks, *, status_code=200, expect_url=None):
+def _fake_centaur_api(monkeypatch, respond):
+    """Route every httpx call to ``respond(method, url, params)`` and record it."""
+    calls = []
+
     class FakeClient:
         def __init__(self, *args, **kwargs):
             pass
@@ -36,13 +54,24 @@ def _fake_streaming_client(monkeypatch, chunks, *, status_code=200, expect_url=N
         def __exit__(self, *args):
             return False
 
-        def stream(self, method, url):
-            assert method == "GET"
-            if expect_url is not None:
-                assert url == expect_url
-            return _FakeStream(chunks, status_code=status_code)
+        def request(self, method, url, headers=None, params=None, **kwargs):
+            content = kwargs.get("content")
+            if hasattr(content, "read"):
+                kwargs["content"] = content.read()
+            calls.append({"method": method, "url": url, "headers": headers, "params": params, **kwargs})
+            return respond(method, url, params)
+
+        def stream(self, method, url, headers=None):
+            calls.append({"method": method, "url": url, "headers": headers, "stream": True})
+            return respond(method, url, None)
+
+    def no_bot_token(key, default=None):
+        assert key != "DISCORD_BOT_TOKEN", "proxied commands must not use the bot token"
+        return {"CENTAUR_API_URL": "http://api.test/", "CENTAUR_API_BEARER_TOKEN": ""}.get(key, default)
 
     monkeypatch.setattr("client.httpx.Client", FakeClient)
+    monkeypatch.setattr("client.secret", no_bot_token)
+    return calls
 
 
 def test_join_server_posts_invite_code(monkeypatch):
@@ -170,51 +199,154 @@ def test_format_message_handles_no_attachments():
     assert client._format_message(msg)["attachments"] == []
 
 
-def test_upload_file_rejects_missing_path(tmp_path):
-    client = DiscordClient(token="unused")
-    missing = tmp_path / "nope.txt"
+def test_proxied_messages_call_the_centaur_api_without_a_bot_token(monkeypatch):
+    calls = _fake_centaur_api(
+        monkeypatch,
+        lambda method, url, params: _FakeResponse(
+            json_body={
+                "ok": True,
+                "channel_id": THREAD,
+                "messages": [
+                    {"id": "3", "channel_id": THREAD, "content": "newest"},
+                    {"id": "2", "channel_id": THREAD, "content": "older"},
+                ],
+            }
+        ),
+    )
 
-    try:
-        client.upload_file("general", str(missing))
-    except FileNotFoundError as exc:
-        assert "nope.txt" in str(exc)
-    else:
-        raise AssertionError("expected FileNotFoundError for a missing upload path")
+    messages = DiscordClient().get_messages_proxy(THREAD, limit=500)
 
-
-def test_download_url_streams_cdn_file(monkeypatch, tmp_path):
-    client = DiscordClient(token="unused")
-    url = "https://cdn.discordapp.com/attachments/11/123/report.pdf"
-    _fake_streaming_client(monkeypatch, [b"hello-", b"bytes"], expect_url=url)
-
-    result = client.download_url(url, output_dir=str(tmp_path))
-
-    saved = tmp_path / "report.pdf"
-    assert saved.read_bytes() == b"hello-bytes"
-    assert result == {"path": str(saved), "size": 11, "url": url}
-
-
-def test_download_url_rejects_non_cdn_host(tmp_path):
-    client = DiscordClient(token="unused")
-
-    with pytest.raises(ValueError, match="Discord CDN"):
-        client.download_url("http://api:8000/internal/secrets", output_dir=str(tmp_path))
-
-    # The guard fires before any network or filesystem work.
-    assert list(tmp_path.iterdir()) == []
+    assert [message["content"] for message in messages] == ["older", "newest"]
+    assert calls[0]["method"] == "GET"
+    assert calls[0]["url"] == f"http://api.test/api/discord/channels/{THREAD}/messages"
+    assert calls[0]["params"] == {"limit": 100}
+    assert "Authorization" not in calls[0]["headers"]
 
 
-def test_download_url_rejects_oversized_response(monkeypatch, tmp_path):
-    client = DiscordClient(token="unused")
-    client._MAX_DOWNLOAD_BYTES = 4  # tighten the cap so two chunks trips it
-    url = "https://cdn.discordapp.com/attachments/11/123/big.bin"
-    _fake_streaming_client(monkeypatch, [b"aaaa", b"bbbb"], expect_url=url)
+def test_proxied_commands_require_an_explicit_channel_id():
+    with pytest.raises(ValueError, match="channel or thread ID"):
+        DiscordClient().get_messages_proxy("general")
 
-    with pytest.raises(ValueError, match="download limit"):
-        client.download_url(url, output_dir=str(tmp_path))
 
-    # The partially-written file is cleaned up.
-    assert not (tmp_path / "big.bin").exists()
+def test_get_context_proxy_reads_the_target_and_its_neighbours(monkeypatch):
+    def respond(method, url, params):
+        if url.endswith("/messages/500"):
+            return _FakeResponse(json_body={"message": {"id": "500", "content": "target"}})
+        if params == {"limit": 2, "before": "500"}:
+            return _FakeResponse(json_body={"messages": [{"id": "499"}, {"id": "498"}]})
+        if params == {"limit": 1, "after": "500"}:
+            return _FakeResponse(json_body={"messages": [{"id": "501"}]})
+        raise AssertionError((url, params))
+
+    _fake_centaur_api(monkeypatch, respond)
+
+    messages = DiscordClient().get_context_proxy(CHANNEL, "500", before=2, after=1)
+
+    assert [message["id"] for message in messages] == ["501", "500", "499", "498"]
+
+
+def test_post_message_proxy_sends_the_message_fields(monkeypatch):
+    calls = _fake_centaur_api(
+        monkeypatch,
+        lambda method, url, params: _FakeResponse(
+            json_body={"ok": True, "message": {"id": "900", "channel_id": THREAD, "content": "hi"}}
+        ),
+    )
+
+    result = DiscordClient().post_message_proxy(
+        THREAD, "hi", reply_to_message_id="899", suppress_embeds=True
+    )
+
+    assert result["id"] == "900"
+    assert calls[0]["method"] == "POST"
+    assert calls[0]["url"] == f"http://api.test/api/discord/channels/{THREAD}/messages"
+    assert calls[0]["json"] == {"content": "hi", "reply_to": "899", "suppress_embeds": True}
+
+
+def test_upload_file_proxy_posts_the_file_bytes(monkeypatch, tmp_path):
+    path = tmp_path / "report.pdf"
+    path.write_bytes(b"%PDF-1.")
+    calls = _fake_centaur_api(
+        monkeypatch,
+        lambda method, url, params: _FakeResponse(json_body={"message": {"id": "901"}}),
+    )
+
+    result = DiscordClient().upload_file_proxy(CHANNEL, str(path), content="see attached")
+
+    assert result["id"] == "901"
+    assert calls[0]["url"] == f"http://api.test/api/discord/channels/{CHANNEL}/files"
+    assert calls[0]["params"] == {
+        "filename": "report.pdf",
+        "content": "see attached",
+        "content_type": "application/pdf",
+    }
+    assert calls[0]["content"] == b"%PDF-1."
+    assert calls[0]["headers"]["Content-Type"] == "application/octet-stream"
+
+
+def test_upload_file_proxy_rejects_missing_path(tmp_path):
+    with pytest.raises(FileNotFoundError, match="nope.txt"):
+        DiscordClient().upload_file_proxy(CHANNEL, str(tmp_path / "nope.txt"))
+
+
+def test_download_proxy_reads_the_message_then_streams_each_attachment(monkeypatch, tmp_path):
+    def respond(method, url, params):
+        if url.endswith("/messages/700"):
+            return _FakeResponse(
+                json_body={"message": {"attachments": [{"id": "701", "filename": "a.txt"}]}}
+            )
+        if url.endswith("/messages/700/attachments/701"):
+            return _FakeResponse(
+                headers={"content-disposition": 'attachment; filename="../a.txt"'},
+                chunks=[b"hello-", b"bytes"],
+            )
+        raise AssertionError(url)
+
+    calls = _fake_centaur_api(monkeypatch, respond)
+
+    saved = DiscordClient().download_message_attachments_proxy(CHANNEL, "700", output_dir=str(tmp_path))
+
+    assert saved == [{"filename": "a.txt", "path": str(tmp_path / "a.txt"), "size": 11}]
+    assert (tmp_path / "a.txt").read_bytes() == b"hello-bytes"
+    assert calls[1]["url"] == f"http://api.test/api/discord/channels/{CHANNEL}/messages/700/attachments/701"
+    assert calls[1]["stream"] is True
+
+
+def test_download_proxy_can_fetch_one_attachment_without_reading_history(monkeypatch, tmp_path):
+    calls = _fake_centaur_api(
+        monkeypatch,
+        lambda method, url, params: _FakeResponse(
+            headers={"content-disposition": 'attachment; filename="b.png"'}, chunks=[b"png"]
+        ),
+    )
+
+    saved = DiscordClient().download_message_attachments_proxy(
+        CHANNEL, "700", output_dir=str(tmp_path), attachment_id="702"
+    )
+
+    assert saved == [{"filename": "b.png", "path": str(tmp_path / "b.png"), "size": 3}]
+    assert [call["url"] for call in calls] == [
+        f"http://api.test/api/discord/channels/{CHANNEL}/messages/700/attachments/702"
+    ]
+
+
+def test_proxied_errors_report_status_and_retry_after(monkeypatch):
+    _fake_centaur_api(
+        monkeypatch,
+        lambda method, url, params: _FakeResponse(
+            status_code=429,
+            json_body={"ok": False, "error": "Discord message list is rate limited"},
+            headers={"retry-after": "3"},
+        ),
+    )
+
+    with pytest.raises(RuntimeError) as error:
+        DiscordClient().get_messages_proxy(CHANNEL)
+
+    assert str(error.value) == (
+        f"Centaur API error 429 on /api/discord/channels/{CHANNEL}/messages: "
+        "Discord message list is rate limited (retry after 3s)"
+    )
 
 
 def _thread_response(thread_type=11):

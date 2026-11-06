@@ -357,6 +357,42 @@ class ConsoleClient:
             method="DELETE",
         )
 
+    def admin_set_discord_permission(
+        self,
+        principal: str,
+        channel_id: str,
+        upload: bool | None = None,
+        download: bool | None = None,
+        history: bool | None = None,
+    ) -> dict[str, Any]:
+        """Create or update a principal's Discord channel permission.
+
+        New permissions default every unspecified flag to enabled.
+        """
+        data: dict[str, Any] = {"channel_id": channel_id}
+        for key, value in {
+            "upload_enabled": upload,
+            "download_enabled": download,
+            "history_enabled": history,
+        }.items():
+            if value is not None:
+                data[key] = value
+        principal_id = self._admin_principal_id(principal)
+        return self._admin_object(
+            f"{SANDBOX_ADMIN_PRINCIPALS_PATH}/{principal_id}/discord_channel_permissions",
+            method="POST",
+            json={"data": data},
+        )
+
+    def admin_remove_discord_permission(self, principal: str, channel_id: str) -> None:
+        """Remove a principal's own permission for a Discord channel."""
+        principal_id = self._admin_principal_id(principal)
+        self._admin_request(
+            f"{SANDBOX_ADMIN_PRINCIPALS_PATH}/{principal_id}/discord_channel_permissions/"
+            f"{quote(channel_id, safe='')}",
+            method="DELETE",
+        )
+
     def admin_set_sandbox_access(self, principal: str, **capabilities: Any) -> dict[str, Any]:
         """Update selected sandbox capabilities, such as sandbox_sessions_read_enabled."""
         data = {key: value for key, value in capabilities.items() if value is not None}

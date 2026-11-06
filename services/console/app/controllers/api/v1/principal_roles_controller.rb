@@ -7,7 +7,7 @@ module Api
     class PrincipalRolesController < Api::BaseController
       def index
         principal = Principal.find_by_oid!(params[:principal_id])
-        roles = principal.roles.includes(:slack_channel_permissions).order(:id)
+        roles = principal.roles.includes(:slack_channel_permissions, :discord_channel_permissions).order(:id)
         render json: { data: roles.map { |r| role_payload(r) } }
       end
 
@@ -44,6 +44,7 @@ module Api
           name: role.name,
           labels: role.labels,
           slack_channel_permissions: role.slack_channel_permissions_payload,
+          discord_channel_permissions: role.discord_channel_permissions_payload,
           created_at: role.created_at,
           updated_at: role.updated_at
         }

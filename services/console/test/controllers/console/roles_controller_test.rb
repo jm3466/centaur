@@ -30,6 +30,7 @@ module Console
       assert_select "h1", text: role.name
       assert_select "a[href=?]", edit_console_role_path(role.oid), text: "Edit"
       assert_select "form[action=?]", slack_channel_permissions_console_role_path(role.oid)
+      assert_select "form[action=?]", discord_channel_permissions_console_role_path(role.oid)
       assert_select "a[href=?]", console_secret_path("static", static_secrets(:acme_prod_api_key).oid)
       assert_select "form[action=?]", grant_secret_console_role_path(role.oid) do
         assert_select "select[name=grantable][aria-label=?]", "Secret to grant"
@@ -197,6 +198,36 @@ module Console
       assert_equal [ permission.id ], role.slack_channel_permissions.reload.pluck(:id)
       Principal.where(id: role.principal_ids).find_each do |principal|
         assert_equal versions.fetch(principal.id), principal.sync_config_cache_version
+      end
+    end
+
+    test "update_discord_channel_permissions stores role permissions and bumps versions" do
+      role = roles(:acme_infra)
+      versions = Principal.where(id: role.principal_ids).pluck(:id, :sync_config_cache_version).to_h
+
+      patch discord_channel_permissions_console_role_url(role.oid),
+            params: {
+              role: {
+                discord_channel_permissions_attributes: {
+                  "0" => {
+                    channel_id: "123456789012345678",
+                    upload_enabled: "0",
+                    download_enabled: "1",
+                    history_enabled: "1"
+                  }
+                }
+              }
+            }
+
+      assert_redirected_to console_role_path(role.oid)
+      assert_equal "Updated Discord channel permissions.", flash[:notice]
+      permission = role.discord_channel_permissions.reload.sole
+      assert_equal "123456789012345678", permission.channel_id
+      assert_not permission.upload_enabled
+      assert_predicate permission, :download_enabled
+      assert_predicate permission, :history_enabled
+      Principal.where(id: role.principal_ids).find_each do |principal|
+        assert_equal versions.fetch(principal.id) + 1, principal.sync_config_cache_version
       end
     end
 

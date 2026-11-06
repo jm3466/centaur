@@ -5,6 +5,7 @@
 class ConsoleController < ApplicationController
   include SecretKinds
   include Console::SlackChannelPermissionManagement
+  include Console::DiscordChannelPermissionManagement
 
   layout "console"
 
@@ -47,6 +48,8 @@ class ConsoleController < ApplicationController
     @principal = Principal.find_by_oid!(params[:id])
     load_slack_channel_permission_form(@principal)
     @inherited_slack_channel_permissions = @principal.inherited_slack_channel_permissions_payload
+    load_discord_channel_permission_form(@principal)
+    @inherited_discord_channel_permissions = @principal.inherited_discord_channel_permissions_payload
     load_principal_roles
     effective_page = PrincipalEffectiveGrantsPage.new(
       principal: @principal,

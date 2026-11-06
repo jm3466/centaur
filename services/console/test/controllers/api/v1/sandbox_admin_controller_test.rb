@@ -140,6 +140,28 @@ class Api::V1::SandboxAdminControllerTest < ActionDispatch::IntegrationTest
     assert_equal "all", @channel.sandbox_repo_cache
   end
 
+  test "an admin's Slack DM sandbox changes Discord permissions" do
+    version = -> { @channel.reload.sync_config_cache_version }
+
+    with_token(dm_proxy_for(users(:acme_admin))) do |headers|
+      assert_changes version do
+        post "/api/v1/sandbox/admin/principals/#{@channel.oid}/discord_channel_permissions",
+             params: { data: { channel_id: "123456789012345678", upload_enabled: false } }, headers: headers, as: :json
+      end
+      assert_response :created
+      permission = @channel.discord_channel_permissions.find_by!(channel_id: "123456789012345678")
+      assert_not permission.upload_enabled
+      assert permission.history_enabled
+
+      assert_changes version do
+        delete "/api/v1/sandbox/admin/principals/#{@channel.oid}/discord_channel_permissions/123456789012345678",
+               headers: headers
+      end
+      assert_response :no_content
+      assert_not @channel.discord_channel_permissions.exists?(channel_id: "123456789012345678")
+    end
+  end
+
   test "sandbox access updates reject values that are not booleans or a repo cache mode" do
     with_token(dm_proxy_for(users(:acme_admin))) do |headers|
       [

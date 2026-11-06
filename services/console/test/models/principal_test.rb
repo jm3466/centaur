@@ -437,6 +437,56 @@ class PrincipalTest < ActiveSupport::TestCase
     end
   end
 
+  test "effective Discord permissions merge direct and role rows" do
+    principal = principals(:acme_channel)
+    role = roles(:acme_infra)
+    principal.discord_channel_permissions.create!(channel_id: "123456789012345678", upload_enabled: true)
+    role.discord_channel_permissions.create!(channel_id: "123456789012345678", download_enabled: true)
+    role.discord_channel_permissions.create!(channel_id: "987654321098765432", history_enabled: true)
+
+    assert_equal(
+      [
+        {
+          "channel_id" => "123456789012345678",
+          "upload_enabled" => true,
+          "download_enabled" => true,
+          "history_enabled" => false
+        },
+        {
+          "channel_id" => "987654321098765432",
+          "upload_enabled" => false,
+          "download_enabled" => false,
+          "history_enabled" => true
+        }
+      ],
+      principal.effective_discord_channel_permissions_payload
+    )
+    assert_equal %w[123456789012345678 987654321098765432],
+                 principal.inherited_discord_channel_permissions_payload.pluck("channel_id")
+  end
+
+  test "api server JWT carries direct and inherited Discord permissions" do
+    with_env("CENTAUR_JWT_SIGNING_SECRET" => "test-secret") do
+      principal = principals(:acme_channel)
+      principal.discord_channel_permissions.create!(channel_id: "123456789012345678", upload_enabled: true)
+      roles(:acme_infra).discord_channel_permissions.create!(
+        channel_id: "987654321098765432",
+        download_enabled: true,
+        history_enabled: true
+      )
+
+      claims = jwt_payload(ApiServer::Jwt.encode_for_principal(principal))
+      assert_equal(
+        {
+          "upload_channels" => [ "123456789012345678" ],
+          "download_channels" => [ "987654321098765432" ],
+          "history_channels" => [ "987654321098765432" ]
+        },
+        claims.fetch("discord")
+      )
+    end
+  end
+
   test "api server JWT is deterministic inside the rotation window" do
     with_env("CENTAUR_JWT_SIGNING_SECRET" => "test-secret") do
       principal = principals(:acme_channel)

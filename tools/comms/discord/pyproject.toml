@@ -1,6 +1,6 @@
 [project]
 name = "discord"
-description = "Discord self-token CLI for AI agents - guilds, channels, search, and messages"
+description = "Discord CLI for AI agents - channel messages, files, and guild search"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [

@@ -17,6 +17,7 @@ module Api
               principal: principal_payload(principal),
               capabilities: capabilities_payload(principal),
               slack_channel_permissions: principal.effective_slack_channel_permissions_payload,
+              discord_channel_permissions: principal.effective_discord_channel_permissions_payload,
               oauth_credentials: oauth_credentials_payload(principal),
               connected_tools: principal.connected_tool_names,
               permissions: permissions

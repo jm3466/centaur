@@ -1,0 +1,137 @@
+<% owner = local_assigns.fetch(:owner) %>
+<% url = local_assigns.fetch(:url) %>
+<% inherited_permissions = local_assigns.fetch(:inherited_permissions, []) %>
+<% checkbox_class = "mt-1 h-4 w-4 rounded border-ink-500 bg-ink-800 text-centaur-500 focus:ring-centaur-500" %>
+<% permissions = @discord_channel_permissions || [] %>
+
+<section class="mb-8">
+  <div class="mb-4">
+    <h2 class="mb-1 text-xs font-semibold uppercase tracking-wider text-zinc-500">Discord Channel Permissions</h2>
+  </div>
+  <div class="console-panel overflow-visible">
+    <%= form_with model: owner,
+                  url: url,
+                  method: :patch,
+                  data: { turbo: false },
+                  class: "space-y-0" do |form| %>
+      <% if permissions.any? %>
+        <div class="overflow-x-auto">
+          <table class="console-table">
+            <thead class="console-table-head">
+              <tr>
+                <th class="console-th">Channel</th>
+                <% DiscordChannelPermission::PERMISSION_FLAGS.each do |flag| %>
+                  <th class="console-th"><%= flag.fetch(:label) %></th>
+                <% end %>
+                <th class="console-th">Delete</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-ink-700">
+              <% permissions.each do |permission| %>
+                <tr>
+                  <%= form.fields_for :discord_channel_permissions, permission do |permission_fields| %>
+                    <% delete_form_id = "delete_discord_channel_permission_#{permission.oid}" %>
+                    <td class="console-td min-w-80">
+                      <%= permission_fields.hidden_field :id %>
+                      <div class="text-sm text-zinc-100"><%= permission.channel_id %></div>
+                    </td>
+                    <% DiscordChannelPermission::PERMISSION_FLAGS.each do |flag| %>
+                      <td class="console-td">
+                        <%= permission_fields.check_box flag.fetch(:attribute),
+                                                        class: checkbox_class,
+                                                        aria: { label: "#{flag.fetch(:label)} for #{permission.channel_id}" } %>
+                      </td>
+                    <% end %>
+                    <td class="console-td">
+                      <%= button_tag type: "submit",
+                                     name: nil,
+                                     form: delete_form_id,
+                                     class: "grid size-8 place-items-center rounded text-zinc-500 transition-colors hover:bg-red-500/10 hover:text-red-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-400",
+                                     title: "Delete #{permission.channel_id}",
+                                     aria: { label: "Delete #{permission.channel_id}" } do %>
+                        <%= console_icon("trash", classes: "size-4") %>
+                      <% end %>
+                    </td>
+                  <% end %>
+                </tr>
+              <% end %>
+            </tbody>
+          </table>
+        </div>
+      <% else %>
+        <div class="p-4">
+          <div class="empty-state">No Discord channels selected.</div>
+        </div>
+      <% end %>
+
+      <% new_permission = DiscordChannelPermission.new(DiscordChannelPermission::DEFAULT_ENABLED_ATTRIBUTES) %>
+      <%= form.fields_for :discord_channel_permissions, new_permission do |permission_fields| %>
+        <div class="grid gap-4 border-t border-ink-700 p-5 lg:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
+          <label class="block">
+            <span class="form-label">Add Channel</span>
+            <%= permission_fields.text_field :channel_id,
+                                             class: "form-input",
+                                             placeholder: "Discord channel ID, e.g. 123456789012345678",
+                                             inputmode: "numeric",
+                                             autocomplete: "off" %>
+          </label>
+          <% DiscordChannelPermission::PERMISSION_FLAGS.each do |flag| %>
+            <label class="flex items-start gap-3 pt-6">
+              <%= permission_fields.check_box flag.fetch(:attribute), class: checkbox_class %>
+              <span class="text-sm font-medium text-zinc-100"><%= flag.fetch(:label) %></span>
+            </label>
+          <% end %>
+        </div>
+      <% end %>
+
+      <div class="px-5 pb-5">
+        <%= submit_tag "Save Discord channel permissions", class: "btn-primary" %>
+      </div>
+    <% end %>
+
+    <% permissions.each do |permission| %>
+      <%= form_with url: console_discord_channel_permission_path(permission),
+                    method: :delete,
+                    id: "delete_discord_channel_permission_#{permission.oid}",
+                    data: { turbo: false },
+                    class: "hidden" do %>
+      <% end %>
+    <% end %>
+  </div>
+
+  <% if inherited_permissions.present? %>
+    <div class="mb-3 mt-6">
+      <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-500">Inherited From Roles</h3>
+    </div>
+    <div class="console-panel overflow-x-auto">
+      <table class="console-table">
+        <thead class="console-table-head">
+          <tr>
+            <th class="console-th">Channel</th>
+            <% DiscordChannelPermission::PERMISSION_FLAGS.each do |flag| %>
+              <th class="console-th"><%= flag.fetch(:label) %></th>
+            <% end %>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-ink-700">
+          <% inherited_permissions.each do |permission| %>
+            <tr>
+              <td class="console-td">
+                <div class="text-sm text-zinc-100"><%= permission["channel_id"] %></div>
+              </td>
+              <% DiscordChannelPermission::PERMISSION_FLAGS.each do |flag| %>
+                <td class="console-td">
+                  <%= check_box_tag nil,
+                                    "1",
+                                    permission.fetch(flag.fetch(:attribute).to_s),
+                                    disabled: true,
+                                    class: checkbox_class %>
+                </td>
+              <% end %>
+            </tr>
+          <% end %>
+        </tbody>
+      </table>
+    </div>
+  <% end %>
+</section>

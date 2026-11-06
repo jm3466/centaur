@@ -387,6 +387,33 @@ def test_admin_set_sandbox_access_sends_only_supplied_capabilities():
     )
 
 
+def test_admin_discord_permission_upserts_supplied_flags_and_removes_by_channel():
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            assert request.url.path == f"{SANDBOX_ADMIN_PRINCIPALS_PATH}/lookup/discord-channel-1-2"
+            return json_response({"data": {"id": "prn_123"}})
+        body = json.loads(request.content) if request.content else None
+        requests.append((request.method, request.url.path, body))
+        if request.method == "DELETE":
+            return httpx.Response(204)
+        return json_response({"data": body["data"]}, 201)
+
+    client = make_client(handler)
+    result = client.admin_set_discord_permission(
+        "discord-channel-1-2", "123456789012345678", upload=False
+    )
+    client.admin_remove_discord_permission("discord-channel-1-2", "123456789012345678")
+
+    assert result == {"channel_id": "123456789012345678", "upload_enabled": False}
+    path = f"{SANDBOX_ADMIN_PRINCIPALS_PATH}/prn_123/discord_channel_permissions"
+    assert requests == [
+        ("POST", path, {"data": {"channel_id": "123456789012345678", "upload_enabled": False}}),
+        ("DELETE", f"{path}/123456789012345678", None),
+    ]
+
+
 def test_admin_slack_external_teams_add_and_remove_one_team_id():
     requests = []
 
