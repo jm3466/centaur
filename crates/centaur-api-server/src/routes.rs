@@ -52,6 +52,7 @@ use crate::{
     },
     api_jwt::{bearer_jwt_from_headers, decode_jwt_payload, verify_console_jwt},
     auth::{ApiAuthConfig, AuthenticatedCaller, CallerClass, Capability},
+    discord_proxy::discord_proxy_router,
     mcp::{mcp_get, mcp_post, mcp_protected_resource_metadata},
     slack_external_teams::{get_slack_external_team_ids, replace_slack_external_team_ids},
     slack_proxy::slack_proxy_router,
@@ -261,6 +262,7 @@ pub fn build_router_with_app_state(state: AppState) -> Router {
             get(get_slack_external_team_ids).put(replace_slack_external_team_ids),
         )
         .merge(slack_proxy_router())
+        .merge(discord_proxy_router())
         .route("/api/workflows/schedules", get(list_workflow_schedules))
         .route(
             "/api/workflows/runs",
@@ -598,6 +600,7 @@ fn route_access(method: &Method, route: &str) -> Option<RouteAccess> {
         // Keep other methods out of the principal-only `/api/slack/` family.
         (_, "/api/slack/external-team-ids") => None,
         (_, route) if route.starts_with("/api/slack/") => Some(RouteAccess::PrincipalOnly),
+        (_, route) if route.starts_with("/api/discord/") => Some(RouteAccess::PrincipalOnly),
         (_, route) if route.starts_with("/api/admin/slack/dm-sync/") => {
             capability(Capability::AdminSync)
         }

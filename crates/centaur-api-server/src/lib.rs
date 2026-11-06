@@ -2,6 +2,7 @@ mod api_clients;
 mod api_jwt;
 mod auth;
 pub mod client;
+mod discord_proxy;
 mod error;
 mod mcp;
 mod routes;
@@ -236,6 +237,10 @@ mod tests {
                 .body(Body::empty())
                 .unwrap(),
             Request::builder()
+                .uri("/api/discord/channels")
+                .body(Body::empty())
+                .unwrap(),
+            Request::builder()
                 .method(Method::POST)
                 .uri("/api/sandboxes/drain")
                 .body(Body::empty())
@@ -348,6 +353,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(slack_proxy.status(), StatusCode::FORBIDDEN);
+
+        let discord_proxy = build_router_with_app_state(AppState::unready(test_auth()))
+            .oneshot(
+                Request::builder()
+                    .uri("/api/discord/channels")
+                    .header(header::AUTHORIZATION, format!("Bearer {}", console_token()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(discord_proxy.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
@@ -441,6 +458,14 @@ mod tests {
             (
                 Request::builder()
                     .uri("/api/slack/channels")
+                    .header(header::AUTHORIZATION, &authorized)
+                    .body(Body::empty())
+                    .unwrap(),
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                Request::builder()
+                    .uri("/api/discord/channels")
                     .header(header::AUTHORIZATION, &authorized)
                     .body(Body::empty())
                     .unwrap(),
@@ -591,6 +616,19 @@ mod tests {
             .unwrap();
         assert_ne!(slack_response.status(), StatusCode::UNAUTHORIZED);
         assert_ne!(slack_response.status(), StatusCode::FORBIDDEN);
+
+        let discord_response = build_router_with_app_state(AppState::unready(test_auth()))
+            .oneshot(
+                Request::builder()
+                    .uri("/api/discord/channels")
+                    .header(header::AUTHORIZATION, format!("Bearer {principal}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(discord_response.status(), StatusCode::UNAUTHORIZED);
+        assert_ne!(discord_response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

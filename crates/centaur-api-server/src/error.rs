@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    http::{StatusCode, header},
+    http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use centaur_session_core::ThreadKeyError;
@@ -26,6 +26,12 @@ pub enum ApiError {
     PayloadTooLarge(String),
     #[error("{0}")]
     ServiceUnavailable(String),
+    /// An upstream rate limit, passed through with its `Retry-After` value.
+    #[error("{message}")]
+    TooManyRequests {
+        message: String,
+        retry_after: Option<HeaderValue>,
+    },
     /// Server-side misconfiguration or invariant failure. The message is
     /// logged but never returned to the client.
     #[error("{0}")]
@@ -56,6 +62,7 @@ impl IntoResponse for ApiError {
             Self::MethodNotAllowed(_) => StatusCode::METHOD_NOT_ALLOWED,
             Self::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             Self::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::TooManyRequests { .. } => StatusCode::TOO_MANY_REQUESTS,
             Self::Runtime(SessionRuntimeError::BadRequest(_)) => StatusCode::BAD_REQUEST,
             Self::Runtime(SessionRuntimeError::ShuttingDown) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Runtime(SessionRuntimeError::Store(SessionStoreError::NotFound { .. })) => {
@@ -133,6 +140,15 @@ impl IntoResponse for ApiError {
             body["code"] = json!("session_principal_not_preapproved");
         }
         let mut response = (status, Json(body)).into_response();
+        if let Self::TooManyRequests {
+            retry_after: Some(retry_after),
+            ..
+        } = &self
+        {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, retry_after.clone());
+        }
         if status == StatusCode::UNAUTHORIZED {
             response
                 .headers_mut()

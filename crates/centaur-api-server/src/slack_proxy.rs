@@ -41,7 +41,7 @@ const SLACK_FILE_SHARE_RETRY_DELAYS: [Duration; 4] = [
     Duration::from_secs(2),
 ];
 
-fn http_client() -> &'static reqwest::Client {
+pub(crate) fn http_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -1584,7 +1584,7 @@ fn required_slack_string(value: &Value, field: &str) -> Result<String, ApiError>
         .ok_or_else(|| ApiError::BadRequest(format!("Slack response missing {field}")))
 }
 
-fn content_length(headers: &HeaderMap) -> Result<u64, ApiError> {
+pub(crate) fn content_length(headers: &HeaderMap) -> Result<u64, ApiError> {
     headers
         .get(header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
@@ -1592,7 +1592,7 @@ fn content_length(headers: &HeaderMap) -> Result<u64, ApiError> {
         .ok_or_else(|| ApiError::BadRequest("Content-Length header is required".to_owned()))
 }
 
-fn ensure_upload_size(len: u64, max: u64) -> Result<(), ApiError> {
+pub(crate) fn ensure_upload_size(len: u64, max: u64) -> Result<(), ApiError> {
     if len == 0 {
         return Err(ApiError::BadRequest(
             "file body must not be empty".to_owned(),
@@ -1754,7 +1754,7 @@ fn validate_slack_cursor(cursor: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn validate_filename(filename: &str) -> Result<(), ApiError> {
+pub(crate) fn validate_filename(filename: &str) -> Result<(), ApiError> {
     let filename = filename.trim();
     if filename.is_empty() || filename.contains('/') || filename.contains('\\') {
         return Err(ApiError::BadRequest("invalid filename".to_owned()));
@@ -1762,14 +1762,14 @@ fn validate_filename(filename: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
-fn validate_content_type(content_type: &str) -> Result<(), ApiError> {
+pub(crate) fn validate_content_type(content_type: &str) -> Result<(), ApiError> {
     if content_type.trim().is_empty() || content_type.parse::<HeaderValue>().is_err() {
         return Err(ApiError::BadRequest("invalid content_type".to_owned()));
     }
     Ok(())
 }
 
-fn content_disposition_filename(filename: &str) -> String {
+pub(crate) fn content_disposition_filename(filename: &str) -> String {
     let sanitized = filename
         .chars()
         .map(|ch| {
