@@ -162,6 +162,35 @@ a sandbox that holds it is no longer limited by the channel permissions above.
 Grant channel access with Slack channel permissions and per-user access with
 Slack OAuth instead.
 
+### Discord access
+
+The Discord tool's proxied commands call `/api/discord/*` on the API server,
+which uses the Discord bot token server-side. iron-proxy injects the
+principal's Console-issued token on those requests. The API allows a channel
+only if the principal or one of its roles has the matching **History**,
+**Upload**, or **Download** Discord channel permission in the Console:
+
+- **A channel principal starts with its own channel.** When Centaur first
+  creates a Discord channel principal, it grants all three permissions on that
+  channel. Operators can change or remove them afterwards.
+- **A thread uses its parent channel's permissions.** The API reads the
+  thread's parent from Discord and checks the parent channel.
+- **Every other channel needs a grant.** There is no default access to public
+  channels. Grant a channel to the principal or to one of its roles.
+- **Posting a message counts as Upload.**
+- **Downloads come from a message in the channel.** The API reads the message
+  from the permitted channel and streams only that message's attachment, up to
+  25 MiB.
+
+Discord message history includes signed attachment URLs, so a principal with
+**History** on a channel can fetch its attachments through those URLs even
+without **Download**.
+
+Do not grant `DISCORD_BOT_TOKEN` to a principal or role unless the conversation
+should reach every channel the bot can see. The Discord tool's `-direct`
+commands call Discord with that token, so a sandbox that holds it is no longer
+limited by the channel permissions above.
+
 ### Audit trail
 
 Every agent turn (user input, sandbox assignment, execution,
