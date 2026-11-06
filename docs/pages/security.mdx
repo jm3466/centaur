@@ -177,7 +177,8 @@ only if the principal or one of its roles has the matching **History**,
   thread's parent from Discord and checks the parent channel.
 - **Every other channel needs a grant.** There is no default access to public
   channels. Grant a channel to the principal or to one of its roles.
-- **Posting a message counts as Upload.**
+- **Posting a message counts as Upload.** Posted messages can ping users and
+  the author of a replied message, but never `@everyone`, `@here`, or a role.
 - **Downloads come from a message in the channel.** The API reads the message
   from the permitted channel and streams only that message's attachment, up to
   25 MiB.

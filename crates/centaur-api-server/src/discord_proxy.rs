@@ -502,6 +502,12 @@ fn discord_message_payload(
     suppress_embeds: bool,
 ) -> Map<String, Value> {
     let mut payload = Map::new();
+    // Posted text may ping users but never @everyone, @here, or a role;
+    // Discord drops the reply ping unless `replied_user` is set.
+    payload.insert(
+        "allowed_mentions".to_owned(),
+        json!({ "parse": ["users"], "replied_user": true }),
+    );
     if let Some(content) = content {
         payload.insert("content".to_owned(), json!(content));
     }
@@ -1113,14 +1119,18 @@ mod tests {
                 true
             )),
             json!({
+                "allowed_mentions": { "parse": ["users"], "replied_user": true },
                 "content": "hi",
                 "message_reference": { "message_id": "400000000000000001" },
                 "flags": 4
             })
         );
         assert_eq!(
-            Value::Object(discord_message_payload(None, None, false)),
-            json!({})
+            Value::Object(discord_message_payload(Some("@everyone hi"), None, false)),
+            json!({
+                "allowed_mentions": { "parse": ["users"], "replied_user": true },
+                "content": "@everyone hi"
+            })
         );
     }
 
@@ -1172,6 +1182,7 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Value>(payload_part).unwrap(),
             json!({
+                "allowed_mentions": { "parse": ["users"], "replied_user": true },
                 "content": "see attached",
                 "message_reference": { "message_id": "500000000000000002" },
                 "attachments": [{ "id": 0, "filename": "notes.txt" }]
