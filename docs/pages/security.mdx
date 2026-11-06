@@ -182,10 +182,10 @@ only if the principal or one of its roles has the matching **History**,
 - **Downloads come from a message in the channel.** The API reads the message
   from the permitted channel and streams only that message's attachment, up to
   25 MiB.
-
-Discord message history includes signed attachment URLs, so a principal with
-**History** on a channel can fetch its attachments through those URLs even
-without **Download**.
+- **History alone shows no file links.** Discord's attachment links are signed
+  URLs that work without the bot token. Without **Download** on the channel,
+  the API removes them from message history and keeps each attachment's ID,
+  file name, size, and type.
 
 Do not grant `DISCORD_BOT_TOKEN` to a principal or role unless the conversation
 should reach every channel the bot can see. The Discord tool's `-direct`

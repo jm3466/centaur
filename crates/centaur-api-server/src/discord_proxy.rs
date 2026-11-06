@@ -215,7 +215,9 @@ async fn get_discord_messages(
         DiscordChannelPermission::History,
     )
     .await?;
-    let messages = discord_messages(client, config, &channel_id, &query).await?;
+    let mut messages = discord_messages(client, config, &channel_id, &query).await?;
+    hide_attachment_urls_without_download(&claims, client, config, &channel_id, &mut messages)
+        .await?;
     Ok(Json(DiscordMessagesResponse {
         ok: true,
         channel_id,
@@ -241,12 +243,54 @@ async fn get_discord_message(
         DiscordChannelPermission::History,
     )
     .await?;
-    let message = discord_message(client, config, &channel_id, &message_id).await?;
+    let mut message = discord_message(client, config, &channel_id, &message_id).await?;
+    hide_attachment_urls_without_download(&claims, client, config, &channel_id, &mut message)
+        .await?;
     Ok(Json(DiscordMessageResponse {
         ok: true,
         channel_id,
         message,
     }))
+}
+
+/// Removes the signed attachment links from `messages` unless the principal
+/// may download from the channel, because the links work without the bot token.
+async fn hide_attachment_urls_without_download(
+    claims: &DiscordProxyClaims,
+    client: &reqwest::Client,
+    config: &DiscordProxyConfig,
+    channel_id: &str,
+    messages: &mut Value,
+) -> Result<(), ApiError> {
+    if !discord_channel_allowed(
+        claims,
+        client,
+        config,
+        channel_id,
+        &DiscordChannelPermission::Download,
+    )
+    .await?
+    {
+        strip_attachment_urls(messages);
+    }
+    Ok(())
+}
+
+// Walks nested values too: replies and forwards embed copies of other messages.
+fn strip_attachment_urls(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            if let Some(Value::Array(attachments)) = object.get_mut("attachments") {
+                for attachment in attachments.iter_mut().filter_map(Value::as_object_mut) {
+                    attachment.remove("url");
+                    attachment.remove("proxy_url");
+                }
+            }
+            object.values_mut().for_each(strip_attachment_urls);
+        }
+        Value::Array(values) => values.iter_mut().for_each(strip_attachment_urls),
+        _ => {}
+    }
 }
 
 async fn post_discord_message(
@@ -674,24 +718,33 @@ async fn ensure_discord_channel_allowed(
     channel_id: &str,
     permission: DiscordChannelPermission,
 ) -> Result<(), ApiError> {
-    let allowed = permission.allowed_channels(claims);
-    if allowed.iter().any(|allowed| allowed == channel_id) {
+    if discord_channel_allowed(claims, client, config, channel_id, &permission).await? {
         return Ok(());
     }
-
-    // A thread inherits the permissions of its parent channel.
-    if !allowed.is_empty() {
-        let channel = discord_channel(client, config, channel_id).await?;
-        if let Some(parent_id) = discord_thread_parent(&channel)
-            && allowed.iter().any(|allowed| allowed == parent_id)
-        {
-            return Ok(());
-        }
-    }
-
     Err(ApiError::Forbidden(
         permission.forbidden_message().to_owned(),
     ))
+}
+
+async fn discord_channel_allowed(
+    claims: &DiscordProxyClaims,
+    client: &reqwest::Client,
+    config: &DiscordProxyConfig,
+    channel_id: &str,
+    permission: &DiscordChannelPermission,
+) -> Result<bool, ApiError> {
+    let allowed = permission.allowed_channels(claims);
+    if allowed.iter().any(|allowed| allowed == channel_id) {
+        return Ok(true);
+    }
+    if allowed.is_empty() {
+        return Ok(false);
+    }
+
+    // A thread inherits the permissions of its parent channel.
+    let channel = discord_channel(client, config, channel_id).await?;
+    Ok(discord_thread_parent(&channel)
+        .is_some_and(|parent_id| allowed.iter().any(|allowed| allowed == parent_id)))
 }
 
 fn discord_thread_parent(channel: &DiscordChannel) -> Option<&str> {
@@ -1000,6 +1053,74 @@ mod tests {
         ));
         assert_eq!(lookups.load(Ordering::SeqCst), 3);
         server.abort();
+    }
+
+    fn messages_with_files() -> Value {
+        json!([{
+            "id": "700000000000000002",
+            "attachments": [{
+                "id": "700000000000000003",
+                "filename": "report.pdf",
+                "size": 7,
+                "content_type": "application/pdf",
+                "url": "https://cdn.discordapp.com/attachments/1/3/report.pdf?ex=1",
+                "proxy_url": "https://media.discordapp.net/attachments/1/3/report.pdf?ex=1"
+            }],
+            "referenced_message": {
+                "id": "700000000000000004",
+                "attachments": [{
+                    "id": "700000000000000005",
+                    "filename": "photo.png",
+                    "url": "https://cdn.discordapp.com/attachments/1/5/photo.png?ex=1"
+                }]
+            }
+        }])
+    }
+
+    #[tokio::test]
+    async fn history_hides_attachment_links_without_download() {
+        // Nothing listens here, so any channel lookup would fail the test.
+        let config = DiscordProxyConfig {
+            api_url: "http://127.0.0.1:9".to_owned(),
+            bot_token: "test-token".to_owned(),
+        };
+        let channel = "700000000000000001";
+
+        let mut history_only = messages_with_files();
+        hide_attachment_urls_without_download(
+            &test_claims(&[], &[], &[channel]),
+            http_client(),
+            &config,
+            channel,
+            &mut history_only,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            history_only[0]["attachments"],
+            json!([{
+                "id": "700000000000000003",
+                "filename": "report.pdf",
+                "size": 7,
+                "content_type": "application/pdf"
+            }])
+        );
+        assert_eq!(
+            history_only[0]["referenced_message"]["attachments"],
+            json!([{ "id": "700000000000000005", "filename": "photo.png" }])
+        );
+
+        let mut with_download = messages_with_files();
+        hide_attachment_urls_without_download(
+            &test_claims(&[], &[channel], &[channel]),
+            http_client(),
+            &config,
+            channel,
+            &mut with_download,
+        )
+        .await
+        .unwrap();
+        assert_eq!(with_download, messages_with_files());
     }
 
     #[tokio::test]
