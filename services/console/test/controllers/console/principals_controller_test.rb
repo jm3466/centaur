@@ -282,6 +282,84 @@ module Console
       assert_equal [ channel_permission.id, dm_permission.id ].sort, principal.slack_channel_permissions.reload.pluck(:id).sort
     end
 
+    test "update_discord_channel_permissions stores Discord channel permissions" do
+      principal = principals(:acme_user_bob)
+
+      patch console_principal_discord_channel_permissions_url(principal.oid),
+            params: {
+              principal: {
+                discord_channel_permissions_attributes: {
+                  "0" => {
+                    channel_id: " 123456789012345678 ",
+                    upload_enabled: "1",
+                    download_enabled: "0",
+                    history_enabled: "1"
+                  },
+                  "1" => {
+                    channel_id: "",
+                    upload_enabled: "1",
+                    download_enabled: "1",
+                    history_enabled: "1"
+                  }
+                }
+              }
+            }
+
+      assert_redirected_to console_principal_path(principal.oid)
+      assert_equal "Updated Discord channel permissions.", flash[:notice]
+      assert_equal(
+        [
+          {
+            "channel_id" => "123456789012345678",
+            "upload_enabled" => true,
+            "download_enabled" => false,
+            "history_enabled" => true
+          }
+        ],
+        principal.reload.discord_channel_permissions_payload
+      )
+    end
+
+    test "update_discord_channel_permissions rejects invalid and changed channel ids" do
+      principal = principals(:acme_user_bob)
+      permission = principal.discord_channel_permissions.create!(
+        channel_id: "123456789012345678",
+        upload_enabled: true
+      )
+
+      patch console_principal_discord_channel_permissions_url(principal.oid),
+            params: {
+              principal: {
+                discord_channel_permissions_attributes: {
+                  "0" => {
+                    id: permission.id,
+                    channel_id: "987654321098765432",
+                    upload_enabled: "1",
+                    download_enabled: "1",
+                    history_enabled: "1"
+                  }
+                }
+              }
+            }
+
+      assert_redirected_to console_principal_path(principal.oid)
+      assert_equal "Discord channels cannot be changed after creation.", flash[:alert]
+      assert_equal "123456789012345678", permission.reload.channel_id
+
+      patch console_principal_discord_channel_permissions_url(principal.oid),
+            params: {
+              principal: {
+                discord_channel_permissions_attributes: {
+                  "0" => { channel_id: "general", upload_enabled: "1" }
+                }
+              }
+            }
+
+      assert_redirected_to console_principal_path(principal.oid)
+      assert_equal "Channel is not a valid Discord channel ID", flash[:alert]
+      assert_equal [ permission.id ], principal.discord_channel_permissions.reload.pluck(:id)
+    end
+
     test "destroy deletes the principal and dependent access records" do
       principal = principals(:acme_channel)
       proxy = proxies(:acme_proxy)

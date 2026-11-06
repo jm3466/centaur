@@ -2,9 +2,10 @@ module Api
   module V1
     class RolesController < Api::BaseController
       include SlackChannelPermissionApi
+      include DiscordChannelPermissionApi
 
       def index
-        records, meta = paginated_label_search(Role.includes(:slack_channel_permissions))
+        records, meta = paginated_label_search(Role.includes(:slack_channel_permissions, :discord_channel_permissions))
         render json: { data: records.map { |r| record_payload(r) }, meta: meta }
       end
 
@@ -24,6 +25,7 @@ module Api
           role.assign_attributes(data_params.permit(:name, labels: {}))
           role.save!
           replace_slack_channel_permissions!(role) if data_params.key?(:slack_channel_permissions)
+          replace_discord_channel_permissions!(role) if data_params.key?(:discord_channel_permissions)
         end
         render status: :created, json: { data: record_payload(role) }
       rescue ActiveRecord::RecordInvalid => e
@@ -39,6 +41,7 @@ module Api
           role.assign_attributes(data_params.permit(:name, labels: {}))
           role.save!
           replace_slack_channel_permissions!(role) if data_params.key?(:slack_channel_permissions)
+          replace_discord_channel_permissions!(role) if data_params.key?(:discord_channel_permissions)
         end
         render status: (was_new ? :created : :ok), json: { data: record_payload(role) }
       rescue ActiveRecord::RecordInvalid => e
@@ -60,12 +63,17 @@ module Api
           name: role.name,
           labels: role.labels,
           slack_channel_permissions: role.slack_channel_permissions_payload,
+          discord_channel_permissions: role.discord_channel_permissions_payload,
           created_at: role.created_at,
           updated_at: role.updated_at
         }
       end
 
       def slack_channel_permission_owner
+        Role.find_by_oid!(params[:id])
+      end
+
+      def discord_channel_permission_owner
         Role.find_by_oid!(params[:id])
       end
     end

@@ -116,6 +116,32 @@ module Api
         assert_equal true, permission.fetch("history_enabled")
       end
 
+      test "returns merged direct and role Discord channel permissions" do
+        @proxy.principal.discord_channel_permissions.create!(
+          channel_id: "123456789012345678",
+          upload_enabled: true
+        )
+        roles(:acme_infra).discord_channel_permissions.create!(
+          channel_id: "123456789012345678",
+          history_enabled: true
+        )
+
+        with_env("CENTAUR_JWT_SIGNING_SECRET" => "test-secret") do
+          get "/api/v1/sandbox/permissions", headers: auth_headers(token_for(@proxy))
+        end
+        assert_response :ok
+
+        assert_equal(
+          {
+            "channel_id" => "123456789012345678",
+            "upload_enabled" => true,
+            "download_enabled" => false,
+            "history_enabled" => true
+          },
+          json_body.dig("data", "discord_channel_permissions").sole
+        )
+      end
+
       test "rejects requests without a sandbox token" do
         get "/api/v1/sandbox/permissions"
         assert_response :unauthorized

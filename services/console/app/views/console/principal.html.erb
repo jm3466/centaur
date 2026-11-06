@@ -35,6 +35,11 @@
            inherited_permissions: @inherited_slack_channel_permissions,
            api_managed_direct_messages: true %>
 
+<%= render "console/shared/discord_channel_permissions",
+           owner: @principal,
+           url: console_principal_discord_channel_permissions_path(@principal.oid),
+           inherited_permissions: @inherited_discord_channel_permissions %>
+
 <!-- Sandbox access -->
 <section class="mb-8">
   <div class="mb-4">

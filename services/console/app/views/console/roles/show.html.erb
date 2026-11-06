@@ -29,6 +29,10 @@
            owner: @role,
            url: slack_channel_permissions_console_role_path(@role.oid) %>
 
+<%= render "console/shared/discord_channel_permissions",
+           owner: @role,
+           url: discord_channel_permissions_console_role_path(@role.oid) %>
+
 <section>
   <div class="mb-4 flex flex-wrap items-end justify-between gap-3">
     <div>

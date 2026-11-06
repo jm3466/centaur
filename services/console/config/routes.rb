@@ -77,10 +77,14 @@ Rails.application.routes.draw do
         delete "grants/:grant_id", to: "roles#revoke_grant", as: :revoke_grant
         patch "slack_channel_permissions", to: "roles#update_slack_channel_permissions",
               as: :slack_channel_permissions
+        patch "discord_channel_permissions", to: "roles#update_discord_channel_permissions",
+              as: :discord_channel_permissions
       end
     end
     delete "slack_channel_permissions/:slack_channel_permission_id", to: "slack_channel_permissions#destroy",
            as: :slack_channel_permission
+    delete "discord_channel_permissions/:discord_channel_permission_id", to: "discord_channel_permissions#destroy",
+           as: :discord_channel_permission
   end
   # Role assignments and direct grants managed from the principal detail page. The
   # extra /roles and /grants path segments keep these clear of the show route above
@@ -91,6 +95,7 @@ Rails.application.routes.draw do
            defaults: { owner_type: "principal" }, as: :principal_slack_channel_options
     patch  "principals/:id/sandbox_access",   to: "principals#update_sandbox_access", as: :principal_sandbox_access
     patch  "principals/:id/slack_channel_permissions", to: "principals#update_slack_channel_permissions", as: :principal_slack_channel_permissions
+    patch  "principals/:id/discord_channel_permissions", to: "principals#update_discord_channel_permissions", as: :principal_discord_channel_permissions
     post   "principals/:id/roles",            to: "principals#assign_role",   as: :principal_assign_role
     delete "principals/:id/roles/:role_id",   to: "principals#unassign_role", as: :principal_unassign_role
     post   "principals/:id/grants",           to: "principals#grant_secret",  as: :principal_grant_secret
@@ -211,6 +216,7 @@ Rails.application.routes.draw do
         end
         member do
           post "slack_channel_permissions", action: :upsert_slack_channel_permission
+          post "discord_channel_permissions", action: :upsert_discord_channel_permission
         end
         # Grants whose grantee is this role. :role_id is the role's oid.
         resources :grants, only: %i[index], controller: :grantee_grants
@@ -230,6 +236,7 @@ Rails.application.routes.draw do
         member do
           get "effective_config"
           post "slack_channel_permissions", action: :upsert_slack_channel_permission
+          post "discord_channel_permissions", action: :upsert_discord_channel_permission
         end
         # Role assignments for a principal. :id is the role's oid.
         resources :roles, only: %i[index create destroy], controller: :principal_roles
@@ -284,6 +291,8 @@ Rails.application.routes.draw do
               patch "sandbox_access", action: :update_sandbox_access
               post "slack_channel_permissions", action: :upsert_slack_channel_permission
               delete "slack_channel_permissions/:channel_id", action: :destroy_slack_channel_permission
+              post "discord_channel_permissions", action: :upsert_discord_channel_permission
+              delete "discord_channel_permissions/:channel_id", action: :destroy_discord_channel_permission
             end
             resources :roles, only: %i[index create destroy], controller: :principal_roles
             resources :grants, only: %i[index], controller: :grantee_grants

@@ -7,6 +7,7 @@ module Console
     include KvRowParams
     include SecretKinds
     include Console::SlackChannelPermissionManagement
+    include Console::DiscordChannelPermissionManagement
 
     layout "console"
 
@@ -53,6 +54,10 @@ module Console
         console_principal_path(@principal.oid),
         preserve_api_managed_direct_messages: true
       )
+    end
+
+    def update_discord_channel_permissions
+      update_discord_channel_permissions_from_form(@principal, console_principal_path(@principal.oid))
     end
 
     def assign_role

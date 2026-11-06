@@ -322,6 +322,29 @@ class ConsoleControllerTest < ActionDispatch::IntegrationTest
     assert_select "body", text: /#unused/, count: 0
   end
 
+  test "principal detail page renders direct and inherited Discord channel permissions" do
+    principal = principals(:acme_channel)
+    permission = principal.discord_channel_permissions.create!(
+      channel_id: "123456789012345678",
+      upload_enabled: true
+    )
+    roles(:acme_infra).discord_channel_permissions.create!(
+      channel_id: "987654321098765432",
+      history_enabled: true
+    )
+    get console_principal_url(principal.oid)
+    assert_response :ok
+
+    assert_select "h2", text: "Discord Channel Permissions"
+    assert_select "form[action=?]", console_principal_discord_channel_permissions_path(principal.oid) do
+      assert_select "td", text: "123456789012345678"
+      assert_select "input[type=text][name$='[channel_id]'][inputmode=numeric]"
+      assert_select "input[type=submit][value=?]", "Save Discord channel permissions"
+    end
+    assert_select "form[action=?]", console_discord_channel_permission_path(permission)
+    assert_select "td", text: "987654321098765432"
+  end
+
   test "credentials table combines id, shows status, and links to detail" do
     credential = broker_credentials(:acme_managed_gmail)
     get console_credentials_url

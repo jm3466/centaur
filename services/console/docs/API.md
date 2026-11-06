@@ -1109,7 +1109,7 @@ The sandbox permissions response includes an `oauth_credentials` array with non-
 
 ### Sandbox Admin Permission Management
 
-An active admin Console user's Slack DM sandbox may create Slack channel, Slack user, and workflow principals, create and edit static, Postgres DSN, and GCP ID token secrets whose sources reference an external store, grant secrets to roles, inspect a principal's effective grants, manage its roles, direct secret grants, Slack channel permissions, and sandbox capabilities, and edit the Slack Connect allowlist with its sandbox entitlement JWT. The sandbox principal must be a `slack_dm` principal linked to that admin whose Slack team is the bot's workspace, as recorded by the Slack channel catalog. Other sandboxes, including channel, Slack Connect, and Console-user sessions, receive `403`. Request and response shapes match the corresponding admin endpoints.
+An active admin Console user's Slack DM sandbox may create Slack channel, Slack user, and workflow principals, create and edit static, Postgres DSN, and GCP ID token secrets whose sources reference an external store, grant secrets to roles, inspect a principal's effective grants, manage its roles, direct secret grants, Slack and Discord channel permissions, and sandbox capabilities, and edit the Slack Connect allowlist with its sandbox entitlement JWT. The sandbox principal must be a `slack_dm` principal linked to that admin whose Slack team is the bot's workspace, as recorded by the Slack channel catalog. Other sandboxes, including channel, Slack Connect, and Console-user sessions, receive `403`. Request and response shapes match the corresponding admin endpoints.
 
 | Method | Path | Notes |
 | ------ | ---- | ----- |
@@ -1130,6 +1130,8 @@ An active admin Console user's Slack DM sandbox may create Slack channel, Slack 
 | `GET` | `/api/v1/sandbox/admin/secrets` | List grantable secrets of every kind with `id`, `grant_key`, `foreign_id`, `name`, `description`, and `labels`. `q` filters by name or foreign ID. |
 | `POST` | `/api/v1/sandbox/admin/principals/:id/slack_channel_permissions` | Upsert one Slack channel permission (`data: { channel_id, upload_enabled, download_enabled, history_enabled }`). New permissions default omitted flags to `true`. |
 | `DELETE` | `/api/v1/sandbox/admin/principals/:id/slack_channel_permissions/:channel_id` | Remove the principal's own permission for a channel. |
+| `POST` | `/api/v1/sandbox/admin/principals/:id/discord_channel_permissions` | Upsert one Discord channel permission (`data: { channel_id, upload_enabled, download_enabled, history_enabled }`). New permissions default omitted flags to `true`. |
+| `DELETE` | `/api/v1/sandbox/admin/principals/:id/discord_channel_permissions/:channel_id` | Remove the principal's own permission for a Discord channel. |
 | `PATCH` | `/api/v1/sandbox/admin/principals/:id/sandbox_access` | Update only the supplied `sandbox_repo_cache` and `sandbox_*_enabled` fields. Flags must be JSON booleans; other values return `400`. |
 | `GET` | `/api/v1/sandbox/admin/slack_external_teams` | List allowed Slack Connect workspace (`T…`) and Enterprise Grid org (`E…`) ids as `data: [id, …]`. The list is stored by api-rs; if it is unreachable the request returns `503`. |
 | `POST` | `/api/v1/sandbox/admin/slack_external_teams` | Allow one id (`data: { team_id }`) and return the updated list. Adding an allowed id changes nothing. Invalid ids return `422`. |
@@ -1208,6 +1210,8 @@ system-managed `infra` role.
 | `labels`     | optional    | Extensible metadata. Identity is read from the first-class fields, not from labels with matching names. |
 | `slack_channel_permissions` | optional | Direct permissions owned by the principal. Full replacement when present on create or update. |
 | `effective_slack_channel_permissions` | response only | Direct permissions merged with permissions inherited from assigned roles. |
+| `discord_channel_permissions` | optional | Direct Discord permissions owned by the principal. Each row accepts a Discord `channel_id` (a 17 to 20 digit snowflake) and the `upload_enabled`, `download_enabled`, and `history_enabled` flags. Full replacement when present on create or update. A thread uses its parent channel's permissions. |
+| `effective_discord_channel_permissions` | response only | Direct Discord permissions merged with permissions inherited from assigned roles. |
 
 Known kinds are `unknown`, `user`, `console_user`, `workflow`,
 `slack_channel`, `slack_dm`, `discord_channel`, `linear_issue`, `teams_user`,
@@ -1232,6 +1236,8 @@ Returns `201`:
     "labels": { "tier": "backend" },
     "slack_channel_permissions": [],
     "effective_slack_channel_permissions": [],
+    "discord_channel_permissions": [],
+    "effective_discord_channel_permissions": [],
     "created_at": "2026-06-01T10:00:00Z",
     "updated_at": "2026-06-01T10:00:00Z"
   }
@@ -1247,7 +1253,8 @@ Returns `201`:
 | `GET`  | `/api/v1/principals/lookup/:foreign_id/effective_config` | [Effective config](#effective-config) by foreign id. `404` if missing. |
 | `GET`  | `/api/v1/principals/:principal_id/grants` | [List the grants](#list-by-grantee) granted directly to the principal. |
 | `POST` | `/api/v1/principals/:id/slack_channel_permissions` | Idempotently create or update one direct Slack channel permission. Omitted flags default to enabled on create and remain unchanged on update. |
-| `PUT`/`PATCH` | `/api/v1/principals/:id` | [Upsert](#upsert-put--patch) by OID or `foreign_id`. `name`, first-class identity fields, `labels`, and direct `slack_channel_permissions` are mutable on an existing record. `foreign_id` applies only when creating. |
+| `POST` | `/api/v1/principals/:id/discord_channel_permissions` | Idempotently create or update one direct Discord channel permission. Omitted flags default to enabled on create and remain unchanged on update. |
+| `PUT`/`PATCH` | `/api/v1/principals/:id` | [Upsert](#upsert-put--patch) by OID or `foreign_id`. `name`, first-class identity fields, `labels`, and direct `slack_channel_permissions` and `discord_channel_permissions` are mutable on an existing record. `foreign_id` applies only when creating. |
 
 Identity values must be sent through the first-class fields. Labels with the
 same names are ordinary metadata and do not change or mirror identity fields.
@@ -1298,7 +1305,7 @@ The `secrets`, `transforms`, and `postgres` arrays are assembled exactly as in [
 
 ## Roles
 
-A role is a reusable bundle of [grants](#grants) and Slack channel permissions. Principals are assigned roles, and a principal's effective access is the union of its own direct grants and Slack permissions plus those of every role it holds.
+A role is a reusable bundle of [grants](#grants) and Slack and Discord channel permissions. Principals are assigned roles, and a principal's effective access is the union of its own direct grants and channel permissions plus those of every role it holds.
 
 ### Attributes
 
@@ -1308,6 +1315,7 @@ A role is a reusable bundle of [grants](#grants) and Slack channel permissions. 
 | `name`       | optional    | |
 | `labels`     | optional    | |
 | `slack_channel_permissions` | optional | Full replacement when present on create or update. Each row accepts `channel_id` and the `upload_enabled`, `download_enabled`, and `history_enabled` flags. |
+| `discord_channel_permissions` | optional | Full replacement when present on create or update. Rows have the same shape as `slack_channel_permissions`, with a Discord channel ID. |
 
 ### Operations
 
@@ -1327,6 +1335,7 @@ Returns `201`:
     "name": "Infra",
     "labels": { "kind": "shared" },
     "slack_channel_permissions": [],
+    "discord_channel_permissions": [],
     "created_at": "2026-06-01T10:00:00Z",
     "updated_at": "2026-06-01T10:00:00Z"
   }
@@ -1340,7 +1349,8 @@ Returns `201`:
 | `GET`    | `/api/v1/roles/lookup/:foreign_id` | Fetch by foreign id. `404` if missing. |
 | `GET`    | `/api/v1/roles/:role_id/grants` | [List the grants](#list-by-grantee) attached to the role. |
 | `POST`   | `/api/v1/roles/:id/slack_channel_permissions` | Idempotently create or update one role-owned Slack channel permission without replacing other rows. Omitted flags default to enabled on create and remain unchanged on update. |
-| `PUT`/`PATCH` | `/api/v1/roles/:id` | [Upsert](#upsert-put--patch) by OID or `foreign_id`. `name`, `labels`, and `slack_channel_permissions` are mutable on an existing record; `foreign_id` applies only when creating. |
+| `POST`   | `/api/v1/roles/:id/discord_channel_permissions` | Idempotently create or update one role-owned Discord channel permission without replacing other rows. Omitted flags default to enabled on create and remain unchanged on update. |
+| `PUT`/`PATCH` | `/api/v1/roles/:id` | [Upsert](#upsert-put--patch) by OID or `foreign_id`. `name`, `labels`, `slack_channel_permissions`, and `discord_channel_permissions` are mutable on an existing record; `foreign_id` applies only when creating. |
 | `DELETE` | `/api/v1/roles/:id` | Delete. Returns `204`. Cascades: the role's grants and its assignments are removed. |
 
 ### Role assignments
