@@ -477,6 +477,39 @@ def admin_remove_slack_permission(
     )
 
 
+@admin_app.command("set-discord-permission")
+def admin_set_discord_permission(
+    principal: str = typer.Argument(..., help="Principal OID or foreign ID"),
+    channel_id: str = typer.Argument(..., help="Discord channel ID"),
+    upload: bool | None = typer.Option(None, "--upload/--no-upload"),
+    download: bool | None = typer.Option(None, "--download/--no-download"),
+    history: bool | None = typer.Option(None, "--history/--no-history"),
+    url: str | None = URL_OPTION,
+    bearer_token: str | None = BEARER_TOKEN_OPTION,
+) -> None:
+    """Create or update a Discord channel permission. New ones enable unspecified flags."""
+    with get_client(url=url, bearer_token=bearer_token) as client:
+        result = client.admin_set_discord_permission(
+            principal, channel_id, upload=upload, download=download, history=history
+        )
+    console.print_json(json.dumps({"data": result}, default=str))
+
+
+@admin_app.command("remove-discord-permission")
+def admin_remove_discord_permission(
+    principal: str = typer.Argument(..., help="Principal OID or foreign ID"),
+    channel_id: str = typer.Argument(..., help="Discord channel ID"),
+    url: str | None = URL_OPTION,
+    bearer_token: str | None = BEARER_TOKEN_OPTION,
+) -> None:
+    """Remove a principal's own permission for a Discord channel."""
+    with get_client(url=url, bearer_token=bearer_token) as client:
+        client.admin_remove_discord_permission(principal, channel_id)
+    console.print_json(
+        json.dumps({"data": {"principal": principal, "channel_id": channel_id, "removed": True}})
+    )
+
+
 @admin_app.command("set-sandbox-access")
 def admin_set_sandbox_access(
     principal: str = typer.Argument(..., help="Principal OID or foreign ID"),

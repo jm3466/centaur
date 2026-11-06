@@ -1,12 +1,12 @@
-"""Discord self-token client."""
+"""Discord client: proxied channel access through the Centaur API, plus direct token commands."""
 
-import json
+import mimetypes
 import os
 import re
 import time
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote
 
 import httpx
 
@@ -14,6 +14,7 @@ from centaur_sdk import secret
 
 BASE_URL = "https://discord.com/api/v10"
 INVITE_RE = re.compile(r"(?:https?://)?(?:discord(?:\.gg|\.com/invite)/)?([A-Za-z0-9-]+)")
+CHANNEL_ID_RE = re.compile(r"\d{17,20}")
 
 # Discord asks automated clients to identify themselves with a descriptive
 # User-Agent (https://discord.com/developers/docs/reference#user-agent). When
@@ -23,8 +24,6 @@ INVITE_RE = re.compile(r"(?:https?://)?(?:discord(?:\.gg|\.com/invite)/)?([A-Za-
 # still succeeds. A proper bot UA keeps reads working under a bot token (and is
 # harmless under a user token).
 USER_AGENT = "DiscordBot (https://github.com/paradigmxyz/centaur, 0.1.0)"
-# Message flag that suppresses link/embed unfurling on a posted message (1 << 2).
-SUPPRESS_EMBEDS = 1 << 2
 
 # Discord thread channel types
 # (https://discord.com/developers/docs/resources/channel#channel-object-channel-types).
@@ -34,15 +33,12 @@ PRIVATE_THREAD_TYPE = 12
 
 
 class DiscordClient:
-    """High-level Discord client using a regular user token."""
+    """High-level Discord client.
 
-    # Hosts a Discord attachment ``url`` can point at. ``download_url`` refuses
-    # anything else so it can never be aimed at an internal service or metadata
-    # endpoint (it shares the cluster network with the API control plane).
-    _CDN_HOSTS = frozenset({"cdn.discordapp.com", "media.discordapp.net"})
-    # Direct-URL downloads stream to disk, but still cap the total so a hostile
-    # or accidental large URL can't fill the sandbox disk.
-    _MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
+    Proxied methods (``*_proxy``) call the Centaur API, which holds the bot
+    token and checks the conversation's Discord channel permissions. Direct
+    methods call Discord with the ``DISCORD_BOT_TOKEN`` credential.
+    """
 
     def __init__(self, token: str | None = None, timeout: float = 30.0):
         self._token = token
@@ -79,6 +75,222 @@ class DiscordClient:
                 message = response.text
             raise RuntimeError(f"Discord API error ({response.status_code}): {message}")
         return response.json()
+
+    def _centaur_api_url(self) -> str:
+        """Return the Centaur API base URL available inside agent sandboxes."""
+        return secret("CENTAUR_API_URL", "http://api:8000").rstrip("/")
+
+    def _centaur_api_headers(self) -> dict[str, str]:
+        """Return headers for API-server calls.
+
+        In sandboxes, iron-proxy injects the principal-scoped Authorization
+        header for the API host. A local bearer can be supplied for tests or
+        manual CLI use.
+        """
+        headers = {"Accept": "application/json"}
+        bearer = secret("CENTAUR_API_BEARER_TOKEN", "").strip()
+        if bearer:
+            headers["Authorization"] = f"Bearer {bearer}"
+        return headers
+
+    def _centaur_api_request(
+        self,
+        method: str,
+        path: str,
+        headers: dict[str, str] | None = None,
+        **kwargs,
+    ) -> dict[str, Any]:
+        """Call a Centaur API JSON endpoint."""
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                response = client.request(
+                    method,
+                    f"{self._centaur_api_url()}{path}",
+                    headers={**self._centaur_api_headers(), **(headers or {})},
+                    **kwargs,
+                )
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"Centaur API request failed on {path}: {exc}") from exc
+        if response.status_code >= 400:
+            raise RuntimeError(_centaur_api_error(path, response))
+        return response.json()
+
+    def _channel_path(self, channel_id: str) -> str:
+        """Return the Centaur API path of an explicit Discord channel or thread ID."""
+        normalized = str(channel_id).strip().lstrip("#")
+        if not CHANNEL_ID_RE.fullmatch(normalized):
+            raise ValueError(
+                "channel must be a Discord channel or thread ID like 123456789012345678; "
+                "`discord channels` lists the channels this conversation may use"
+            )
+        return f"/api/discord/channels/{normalized}"
+
+    def list_channels_proxy(self) -> list[dict[str, Any]]:
+        """List the channels this conversation may use, with their permissions."""
+        return list(self._centaur_api_request("GET", "/api/discord/channels").get("channels", []))
+
+    def get_messages_proxy(self, channel_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Get recent messages from a channel or thread."""
+        page = self._centaur_api_request(
+            "GET",
+            f"{self._channel_path(channel_id)}/messages",
+            params={"limit": min(limit, 100)},
+        )
+        return list(reversed([self._format_message(msg) for msg in page.get("messages", [])]))
+
+    def search_messages_proxy(self, query: str, channel_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Search recent messages in one channel or thread."""
+        path = f"{self._channel_path(channel_id)}/messages"
+        rows = []
+        before = None
+        while len(rows) < limit:
+            params: dict[str, Any] = {"limit": 100}
+            if before:
+                params["before"] = before
+            messages = self._centaur_api_request("GET", path, params=params).get("messages", [])
+            if not messages:
+                break
+            for msg in messages:
+                if query.lower() in (msg.get("content") or "").lower():
+                    rows.append(self._format_message(msg))
+                    if len(rows) >= limit:
+                        break
+            before = messages[-1].get("id")
+        return list(reversed(rows))
+
+    def get_context_proxy(
+        self,
+        channel_id: str,
+        message_id: str,
+        before: int = 10,
+        after: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Get messages around a specific message."""
+        path = self._channel_path(channel_id)
+        target = self._centaur_api_request(
+            "GET", f"{path}/messages/{quote(str(message_id), safe='')}"
+        ).get("message", {})
+        before_msgs = self._centaur_api_request(
+            "GET",
+            f"{path}/messages",
+            params={"limit": min(before, 100), "before": message_id},
+        ).get("messages", [])
+        after_msgs = self._centaur_api_request(
+            "GET",
+            f"{path}/messages",
+            params={"limit": min(after, 100), "after": message_id},
+        ).get("messages", [])
+        messages = [*reversed(after_msgs), target, *before_msgs]
+        return [self._format_message(msg) for msg in messages]
+
+    def post_message_proxy(
+        self,
+        channel_id: str,
+        content: str,
+        reply_to_message_id: str | None = None,
+        suppress_embeds: bool = False,
+    ) -> dict[str, Any]:
+        """Post a message to a channel or thread.
+
+        Set ``suppress_embeds`` to stop Discord unfurling link previews — useful
+        for status/alert posts whose URLs should stay compact.
+        """
+        response = self._centaur_api_request(
+            "POST",
+            f"{self._channel_path(channel_id)}/messages",
+            json={
+                "content": content,
+                "reply_to": reply_to_message_id,
+                "suppress_embeds": suppress_embeds,
+            },
+        )
+        return self._format_message(response.get("message", {}))
+
+    def upload_file_proxy(
+        self,
+        channel_id: str,
+        file_path: str,
+        content: str = "",
+        reply_to_message_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Upload a local file to a channel or thread, with optional message text."""
+        if not os.path.isfile(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+        path = f"{self._channel_path(channel_id)}/files"
+        params = {
+            "filename": os.path.basename(file_path),
+            "content": content or None,
+            "reply_to": reply_to_message_id,
+            "content_type": mimetypes.guess_type(file_path)[0],
+        }
+        with open(file_path, "rb") as handle:
+            response = self._centaur_api_request(
+                "POST",
+                path,
+                params={key: value for key, value in params.items() if value is not None},
+                content=handle,
+                headers={"Content-Type": "application/octet-stream"},
+            )
+        return self._format_message(response.get("message", {}))
+
+    def download_message_attachments_proxy(
+        self,
+        channel_id: str,
+        message_id: str,
+        output_dir: str = ".",
+        attachment_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Download one attachment, or every attachment, of a message into output_dir."""
+        path = f"{self._channel_path(channel_id)}/messages/{quote(str(message_id), safe='')}"
+        if attachment_id:
+            attachments = [{"id": attachment_id, "filename": attachment_id}]
+        else:
+            message = self._centaur_api_request("GET", path).get("message", {})
+            attachments = message.get("attachments") or []
+        os.makedirs(output_dir, exist_ok=True)
+        saved = []
+        for attachment in attachments:
+            attachment_path = f"{path}/attachments/{quote(str(attachment['id']), safe='')}"
+            saved.append(
+                self._download_proxy(
+                    attachment_path,
+                    output_dir,
+                    attachment.get("filename") or "attachment",
+                )
+            )
+        return saved
+
+    def _download_proxy(self, path: str, output_dir: str, default_filename: str) -> dict[str, Any]:
+        """Stream a Centaur API file download into output_dir."""
+        try:
+            with (
+                httpx.Client(timeout=self.timeout) as client,
+                client.stream(
+                    "GET",
+                    f"{self._centaur_api_url()}{path}",
+                    headers=self._centaur_api_headers(),
+                ) as response,
+            ):
+                if response.status_code >= 400:
+                    response.read()
+                    raise RuntimeError(_centaur_api_error(path, response))
+                filename = _content_disposition_filename(response.headers.get("content-disposition"))
+                # Never let a server-supplied filename escape output_dir.
+                name = os.path.basename(filename or default_filename) or "attachment"
+                dest = os.path.join(output_dir, name)
+                size = 0
+                try:
+                    with open(dest, "wb") as handle:
+                        for chunk in response.iter_bytes():
+                            size += len(chunk)
+                            handle.write(chunk)
+                except BaseException:
+                    if os.path.exists(dest):
+                        os.unlink(dest)
+                    raise
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"Centaur API request failed on {path}: {exc}") from exc
+        return {"filename": name, "path": dest, "size": size}
 
     def get_me(self) -> dict[str, Any]:
         """Get the current Discord user."""
@@ -134,12 +346,6 @@ class DiscordClient:
             )
         return rows
 
-    def get_messages(self, channel: str, limit: int = 50) -> list[dict[str, Any]]:
-        """Get recent messages from a channel by name or ID."""
-        resolved = self._find_channel(channel)
-        messages = self._request("GET", f"/channels/{resolved['id']}/messages", params={"limit": min(limit, 100)})
-        return list(reversed([self._format_message(msg, resolved.get("name")) for msg in messages]))
-
     def search_messages(self, query: str, channel: str, limit: int = 50) -> list[dict[str, Any]]:
         """Search recent messages in one channel by name or ID."""
         resolved = self._find_channel(channel)
@@ -173,161 +379,6 @@ class DiscordClient:
             if len(rows) >= limit:
                 break
         return rows
-
-    def get_context(
-        self,
-        channel: str,
-        message_id: str,
-        before: int = 10,
-        after: int = 10,
-    ) -> list[dict[str, Any]]:
-        """Get messages around a specific message."""
-        resolved = self._find_channel(channel)
-        target = self._request("GET", f"/channels/{resolved['id']}/messages/{message_id}")
-        before_msgs = self._request(
-            "GET",
-            f"/channels/{resolved['id']}/messages",
-            params={"limit": min(before, 100), "before": message_id},
-        )
-        after_msgs = self._request(
-            "GET",
-            f"/channels/{resolved['id']}/messages",
-            params={"limit": min(after, 100), "after": message_id},
-        )
-        messages = [*reversed(after_msgs), target, *before_msgs]
-        return [self._format_message(msg, resolved.get("name")) for msg in messages]
-
-    def post_message(
-        self,
-        channel: str,
-        content: str,
-        reply_to_message_id: str | None = None,
-        suppress_embeds: bool = False,
-    ) -> dict[str, Any]:
-        """Post a message to a channel by name or ID.
-
-        Set ``suppress_embeds`` to stop Discord unfurling link previews — useful
-        for status/alert posts whose URLs should stay compact.
-        """
-        resolved = self._find_channel(channel)
-        payload: dict[str, Any] = {"content": content}
-        if suppress_embeds:
-            payload["flags"] = SUPPRESS_EMBEDS
-        if reply_to_message_id:
-            payload["message_reference"] = {"message_id": reply_to_message_id}
-        msg = self._request("POST", f"/channels/{resolved['id']}/messages", json=payload)
-        return self._format_message(msg, resolved.get("name"))
-
-    def upload_file(
-        self,
-        channel: str,
-        file_path: str,
-        content: str = "",
-        reply_to_message_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Upload a local file to a channel by name or ID, with optional message text."""
-        if not os.path.isfile(file_path):
-            raise FileNotFoundError(f"File not found: {file_path}")
-        resolved = self._find_channel(channel)
-        payload: dict[str, Any] = {}
-        if content:
-            payload["content"] = content
-        if reply_to_message_id:
-            payload["message_reference"] = {"message_id": reply_to_message_id}
-        # Multipart upload: the JSON body rides in ``payload_json`` and the file in
-        # ``files[0]``. The shared ``_request`` always sends a JSON content type, so
-        # this request is issued directly, letting httpx set the multipart boundary.
-        headers = {
-            "Authorization": self._get_token(),
-            "User-Agent": USER_AGENT,
-        }
-        with open(file_path, "rb") as handle:
-            files = {"files[0]": (os.path.basename(file_path), handle)}
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(
-                    f"{BASE_URL}/channels/{resolved['id']}/messages",
-                    headers=headers,
-                    data={"payload_json": json.dumps(payload)},
-                    files=files,
-                )
-        if response.status_code >= 400:
-            try:
-                message = response.json().get("message", response.text)
-            except Exception:
-                message = response.text
-            raise RuntimeError(f"Discord API error ({response.status_code}): {message}")
-        return self._format_message(response.json(), resolved.get("name"))
-
-    def download_message_attachments(
-        self,
-        channel: str,
-        message_id: str,
-        output_dir: str = ".",
-    ) -> list[dict[str, Any]]:
-        """Download every attachment on a specific message into output_dir."""
-        resolved = self._find_channel(channel)
-        target = self._request("GET", f"/channels/{resolved['id']}/messages/{message_id}")
-        os.makedirs(output_dir, exist_ok=True)
-        saved = []
-        for attachment in target.get("attachments") or []:
-            url = attachment.get("url")
-            if not url:
-                continue
-            filename = attachment.get("filename") or "attachment"
-            # Never let a Discord-supplied filename escape output_dir.
-            safe_name = os.path.basename(filename) or "attachment"
-            result = self.download_url(url, output_dir=output_dir, filename=safe_name)
-            saved.append(
-                {
-                    "filename": filename,
-                    "path": result["path"],
-                    "size": result.get("size"),
-                    "url": url,
-                }
-            )
-        return saved
-
-    def download_url(
-        self,
-        url: str,
-        output_dir: str = ".",
-        filename: str | None = None,
-    ) -> dict[str, Any]:
-        """Download a direct attachment/CDN URL into output_dir.
-
-        Useful when a message listing already surfaced an attachment ``url`` and a
-        gateway round-trip is unnecessary. Discord CDN links are pre-signed, so no
-        Authorization header is sent. Only ``https`` Discord CDN hosts are
-        accepted, and the response is streamed to disk with a size cap so the URL
-        can't be aimed at an internal endpoint or exhaust sandbox storage.
-        """
-        parsed = urlparse(url)
-        if parsed.scheme != "https" or (parsed.hostname or "").lower() not in self._CDN_HOSTS:
-            raise ValueError(
-                "Discord downloads only accept https Discord CDN URLs "
-                f"(cdn.discordapp.com / media.discordapp.net); refusing {url!r}"
-            )
-        os.makedirs(output_dir, exist_ok=True)
-        name = filename or os.path.basename(parsed.path) or "download"
-        dest = os.path.join(output_dir, name)
-        total = 0
-        with httpx.Client(timeout=self.timeout) as client, client.stream("GET", url) as response:
-            if response.status_code >= 400:
-                raise RuntimeError(f"Discord download failed ({response.status_code}) for {url}")
-            try:
-                with open(dest, "wb") as handle:
-                    for chunk in response.iter_bytes():
-                        total += len(chunk)
-                        if total > self._MAX_DOWNLOAD_BYTES:
-                            raise ValueError(
-                                f"file exceeds the {self._MAX_DOWNLOAD_BYTES}-byte download limit"
-                            )
-                        handle.write(chunk)
-            except ValueError:
-                if os.path.exists(dest):
-                    os.unlink(dest)
-                raise
-        return {"path": dest, "size": total, "url": url}
 
     def create_thread(
         self,
@@ -453,6 +504,30 @@ class DiscordClient:
 
 def _client() -> DiscordClient:
     return DiscordClient()
+
+
+def _centaur_api_error(path: str, response: httpx.Response) -> str:
+    """Describe a failed Centaur API response, including any Retry-After."""
+    try:
+        body = response.json()
+        detail = body.get("error") or body.get("message") or response.text
+    except ValueError:
+        detail = response.text
+    message = f"Centaur API error {response.status_code} on {path}: {detail}"
+    retry_after = response.headers.get("retry-after")
+    if retry_after:
+        message += f" (retry after {retry_after}s)"
+    return message
+
+
+def _content_disposition_filename(value: str | None) -> str | None:
+    """Extract a simple filename value from Content-Disposition."""
+    if not value:
+        return None
+    match = re.search(r'filename="([^"]+)"', value)
+    if match:
+        return match.group(1)
+    return None
 
 
 def _format_timestamp(msg: dict[str, Any]) -> str:
